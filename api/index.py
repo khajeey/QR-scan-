@@ -450,8 +450,11 @@ async function loadConfig(){
 $('#addurl').onclick=()=>{$('#urls').appendChild(urlRow($('#newurl').value.trim()));$('#newurl').value='';};
 $('#newurl').onkeydown=e=>{if(e.key==='Enter')$('#addurl').click();};
 $('#save').onclick=async()=>{
-  const urls=[...document.querySelectorAll('#urls input')].map(i=>i.value.trim()).filter(Boolean);
-  const r=await fetch('/api/v1/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({forward_urls:urls})}).then(r=>r.json());
+  const urls=[...document.querySelectorAll('#urls input')].map(i=>i.value.trim());
+  const pending=$('#newurl').value.trim();if(pending)urls.push(pending);
+  const clean=urls.filter(Boolean);
+  const r=await fetch('/api/v1/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({forward_urls:clean})}).then(r=>r.json());
+  $('#newurl').value='';
   await loadConfig();toast('Saqlandi ('+(r.forward_urls||[]).length+' ta manzil)');
 };
 function toast(m){const t=$('#toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2200);}
