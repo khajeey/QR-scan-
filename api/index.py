@@ -389,6 +389,14 @@ INDEX_HTML = r'''<!DOCTYPE html>
         <span class="hint" id="savehint"></span>
       </div>
     </div>
+
+    <div class="card">
+      <h2>API (GET + POST)</h2>
+      <p class="desc"><b>GET</b> <code>/api/v1/scans</code> — ma'lumotni olish. Filtrlar: <code>?from=2026-06-01&amp;to=2026-06-10&amp;q=...&amp;date=...&amp;source=...</code><br>
+      <b>POST</b> <code>/api/v1/scans</code> — yangi yozuv qo'shish. Tana (JSON): <code>{"code":"ABC123","device":"...","source":"..."}</code> yoki ro'yxat.</p>
+      <div id="endpoints"></div>
+      <div class="hint">Bu manzillarni istalgan qurilma/serverdan ishlatish mumkin (internet orqali ochiq).</div>
+    </div>
   </section>
 </main>
 <div class="toast" id="toast"></div>
@@ -446,6 +454,19 @@ function urlRow(val){
 async function loadConfig(){
   const c=await api('/api/v1/config');const box=$('#urls');box.innerHTML='';
   (c.forward_urls||[]).forEach(u=>box.appendChild(urlRow(u)));
+  loadEndpoints();
+}
+function endpointRow(url){
+  const div=document.createElement('div');div.className='urlrow';
+  div.innerHTML=`<span class="dot ok"></span><input readonly value="${esc(url)}"><button class="btn" data-act="copy">Nusxa</button><button class="btn" data-act="open">Ochish</button>`;
+  div.querySelector('[data-act=copy]').onclick=()=>{navigator.clipboard.writeText(url);toast('Nusxalandi');};
+  div.querySelector('[data-act=open]').onclick=()=>window.open(url,'_blank');
+  return div;
+}
+function loadEndpoints(){
+  const box=$('#endpoints');box.innerHTML='';const base=location.origin;
+  box.appendChild(endpointRow(base+'/api/v1/scans'));
+  box.appendChild(endpointRow(base+'/api/v1/scans.csv'));
 }
 $('#addurl').onclick=()=>{$('#urls').appendChild(urlRow($('#newurl').value.trim()));$('#newurl').value='';};
 $('#newurl').onkeydown=e=>{if(e.key==='Enter')$('#addurl').click();};
