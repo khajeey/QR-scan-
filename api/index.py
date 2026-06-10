@@ -96,6 +96,47 @@ def db_count(extra=""):
     return _content_range_total(r, len(r.json()))
 
 
+def db_get_setting(key, default):
+    url = REST + "/app_settings?select=value&key=eq." + key
+    try:
+        with httpx.Client(timeout=15) as c:
+            r = c.get(url, headers=HEADERS)
+        if r.status_code >= 300:
+            return default
+        rows = r.json()
+        if rows and rows[0].get("value") is not None:
+            return rows[0]["value"]
+    except httpx.HTTPError:
+        pass
+    return default
+
+
+def db_set_setting(key, value):
+    body = [{"key": key, "value": value}]
+    with httpx.Client(timeout=15) as c:
+        r = c.post(REST + "/app_settings",
+                   headers={**HEADERS, "Prefer": "resolution=merge-duplicates,return=representation"},
+                   content=json.dumps(body))
+    r.raise_for_status()
+    return r.json()
+
+
+def forward_scan(scan, urls):
+    payload = json.dumps({
+        "event": "qr_scan",
+        "data": scan.get("code"),
+        "device": scan.get("device"),
+        "source": scan.get("source"),
+        "scanned_at": scan.get("scanned_at") or scan.get("created_at"),
+    }, ensure_ascii=False).encode("utf-8")
+    for url in urls:
+        try:
+            with httpx.Client(timeout=8) as c:
+                c.post(url, content=payload, headers={"Content-Type": "application/json; charset=utf-8"})
+        except Exception:
+            pass
+
+
 @app.get("/health")
 def health():
     return {"ok": True, "configured": _configured()}
@@ -134,7 +175,11 @@ async def ingest(request: Request):
         created = db_insert(rows)
     except httpx.HTTPError as exc:
         return _err(502, "supabase insert failed: " + str(exc))
-    return JSONResponse({"created": len(created), "items": created}, status_code=201)
+    fwd = db_get_setting("forward_urls", [])
+    if isinstance(fwd, list) and fwd:
+        for sc in created:
+            forward_scan(sc, fwd)
+    return JSONResponse({"created": len(created), "items": created, "forwarded_to": len(fwd) if isinstance(fwd, list) else 0}, status_code=201)
 
 
 @app.get("/api/v1/scans")
@@ -191,6 +236,55 @@ def stats():
     return {"total": total, "today": today_n}
 
 
+@app.get("/api/v1/config")
+def get_config():
+    if not _configured():
+        return _err(503, "server not configured")
+    return {"forward_urls": db_get_setting("forward_urls", [])}
+
+
+@app.post("/api/v1/config")
+async def set_config(request: Request):
+    if not _configured():
+        return _err(503, "server not configured")
+    if not _check_token(request):
+        return _err(401, "invalid token")
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    clean = []
+    for u in payload.get("forward_urls") or []:
+        if isinstance(u, str) and u.strip() and u.strip() not in clean:
+            clean.append(u.strip())
+    try:
+        db_set_setting("forward_urls", clean)
+    except httpx.HTTPError as exc:
+        return _err(502, "save failed: " + str(exc))
+    return {"forward_urls": clean}
+
+
+@app.post("/api/v1/test")
+async def test_url(request: Request):
+    if not _check_token(request):
+        return _err(401, "invalid token")
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    url = (payload.get("url") or "").strip()
+    if not url:
+        return {"ok": False, "error": "URL bo'sh"}
+    body = json.dumps({"event": "qr_scan_test", "data": "TEST-123",
+                       "device": "cloud-test", "scanned_at": "test"}).encode("utf-8")
+    try:
+        with httpx.Client(timeout=10) as c:
+            r = c.post(url, content=body, headers={"Content-Type": "application/json"})
+        return {"ok": True, "status": r.status_code}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
 @app.get("/", response_class=HTMLResponse)
 def dashboard():
     return INDEX_HTML
@@ -234,6 +328,20 @@ INDEX_HTML = r'''<!DOCTYPE html>
   .muted{color:var(--muted)}.empty{text-align:center;padding:48px;color:var(--muted)}
   .pager{display:flex;gap:10px;align-items:center;justify-content:flex-end;margin-top:14px;color:var(--muted)}
   label.chk{display:flex;align-items:center;gap:6px;color:var(--muted);cursor:pointer;user-select:none}
+  nav{display:flex;gap:4px;padding:0 24px;background:var(--panel);border-bottom:1px solid var(--line)}
+  nav button{background:none;border:none;color:var(--muted);padding:12px 16px;cursor:pointer;font-size:14px;border-bottom:2px solid transparent}
+  nav button.active{color:var(--txt);border-bottom-color:var(--accent)}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#06121f;font-weight:600}
+  button.ghost{background:none}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:20px;margin-bottom:16px}
+  .card h2{margin:0 0 4px;font-size:15px}.card p.desc{margin:0 0 16px;color:var(--muted);font-size:13px}
+  .urlrow{display:flex;gap:10px;align-items:center;margin-bottom:10px}
+  .urlrow input{flex:1;font-family:Consolas,monospace;font-size:13px}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--muted);flex:none}
+  .dot.ok{background:var(--ok)}.dot.err{background:var(--err)}
+  .hint{font-size:12px;color:var(--muted);margin-top:8px}
+  .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--panel2);border:1px solid var(--line);padding:12px 20px;border-radius:10px;opacity:0;transition:.25s;pointer-events:none}
+  .toast.show{opacity:1}
 </style>
 </head>
 <body>
@@ -244,7 +352,12 @@ INDEX_HTML = r'''<!DOCTYPE html>
   <div class="stat"><b id="st-today">0</b><span>Bugun</span></div>
   <div class="stat"><b id="st-total">0</b><span>Jami</span></div>
 </header>
+<nav>
+  <button data-tab="scans" class="active">Skanlar</button>
+  <button data-tab="settings">Sozlamalar</button>
+</nav>
 <main>
+  <section id="tab-scans">
   <div class="toolbar">
     <input id="q" class="grow" placeholder="Kod, qurilma yoki manba bo'yicha qidirish...">
     <input id="from" type="date" title="Dan">
@@ -260,7 +373,25 @@ INDEX_HTML = r'''<!DOCTYPE html>
   </table>
   <div id="empty" class="empty" style="display:none">Hozircha skan yo'q.</div>
   <div class="pager"><span id="pginfo"></span><button class="btn" id="prev">‹</button><button class="btn" id="next">›</button></div>
+  </section>
+
+  <section id="tab-settings" style="display:none">
+    <div class="card">
+      <h2>Uzatish manzillari (forward URLs)</h2>
+      <p class="desc">Serverga kelgan har bir skan shu manzillarga ham qayta yuboriladi (masalan dahua, boshqa API, Telegram bot). Format yuboriladigan tana: <code>{"event":"qr_scan","data":"...","device":"...","source":"...","scanned_at":"..."}</code></p>
+      <div id="urls"></div>
+      <div class="urlrow">
+        <input id="newurl" placeholder="https://...">
+        <button class="btn" id="addurl">+ Qo'shish</button>
+      </div>
+      <div style="margin-top:16px">
+        <button class="btn primary" id="save">Saqlash</button>
+        <span class="hint" id="savehint"></span>
+      </div>
+    </div>
+  </section>
 </main>
+<div class="toast" id="toast"></div>
 <script>
 const $=s=>document.querySelector(s);
 const api=(p)=>fetch(p).then(r=>r.json());
@@ -291,7 +422,39 @@ $('#from').onchange=$('#to').onchange=()=>{state.offset=0;load();};
 $('#prev').onclick=()=>{state.offset=Math.max(0,state.offset-state.limit);load();};
 $('#next').onclick=()=>{state.offset+=state.limit;load();};
 $('#csv').onclick=()=>{location.href='/api/v1/scans.csv?'+qstr().toString();};
-setInterval(()=>{if($('#auto').checked)load(),loadStats();},5000);
+setInterval(()=>{if($('#auto').checked && $('#tab-scans').style.display!=='none'){load();loadStats();}},5000);
+
+document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('nav button').forEach(x=>x.classList.remove('active'));
+  b.classList.add('active');
+  $('#tab-scans').style.display=b.dataset.tab==='scans'?'':'none';
+  $('#tab-settings').style.display=b.dataset.tab==='settings'?'':'none';
+  if(b.dataset.tab==='settings')loadConfig();
+});
+function urlRow(val){
+  const div=document.createElement('div');div.className='urlrow';
+  div.innerHTML=`<span class="dot"></span><input value="${esc(val)}" placeholder="https://..."><button class="btn" data-act="test">Tekshirish</button><button class="btn ghost" data-act="del">✕</button>`;
+  div.querySelector('[data-act=del]').onclick=()=>div.remove();
+  div.querySelector('[data-act=test]').onclick=async()=>{
+    const url=div.querySelector('input').value.trim(),dot=div.querySelector('.dot'),btn=div.querySelector('[data-act=test]');
+    dot.className='dot';btn.textContent='...';
+    const r=await fetch('/api/v1/test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url})}).then(r=>r.json());
+    btn.textContent='Tekshirish';dot.className='dot '+(r.ok?'ok':'err');toast(r.ok?('OK — HTTP '+r.status):('Xato: '+r.error));
+  };
+  return div;
+}
+async function loadConfig(){
+  const c=await api('/api/v1/config');const box=$('#urls');box.innerHTML='';
+  (c.forward_urls||[]).forEach(u=>box.appendChild(urlRow(u)));
+}
+$('#addurl').onclick=()=>{$('#urls').appendChild(urlRow($('#newurl').value.trim()));$('#newurl').value='';};
+$('#newurl').onkeydown=e=>{if(e.key==='Enter')$('#addurl').click();};
+$('#save').onclick=async()=>{
+  const urls=[...document.querySelectorAll('#urls input')].map(i=>i.value.trim()).filter(Boolean);
+  const r=await fetch('/api/v1/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({forward_urls:urls})}).then(r=>r.json());
+  await loadConfig();toast('Saqlandi ('+(r.forward_urls||[]).length+' ta manzil)');
+};
+function toast(m){const t=$('#toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2200);}
 load();loadStats();
 </script>
 </body>
