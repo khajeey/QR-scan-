@@ -393,17 +393,27 @@ INDEX_HTML = r'''<!DOCTYPE html>
 
   <section id="tab-imb" style="display:none">
     <div class="toolbar">
-      <span class="muted" style="flex:1">IMB tizimidan har bir face-id / barmoq izi o'tishi (<code>imb.imbtruck.uz</code>) — har bitta skan alohida qator. Bir odam necha marta kirib-chiqsa, hammasi ko'rinadi.</span>
+      <span class="muted" style="flex:1">IMB tizimidan jonli davomat (<code>imb.imbtruck.uz</code>). Qurilma o'sha yerga yuboradi — bu yerda faqat o'qiymiz.</span>
       <span class="muted" id="imb-updated"></span>
       <label class="chk"><input type="checkbox" id="imb-auto" checked> Avto (1 daq)</label>
       <button class="btn" id="imb-refresh">Yangilash</button>
     </div>
+
+    <h2 style="margin:6px 0 10px;font-size:15px">Davomat — xodimlar holati</h2>
     <table>
-      <thead><tr><th style="width:55px">#</th><th style="width:200px">Vaqt</th><th>Xodim</th><th style="width:170px">Hodisa</th></tr></thead>
+      <thead><tr><th style="width:55px">#</th><th>Xodim</th><th style="width:175px">Kirgan</th><th style="width:175px">Chiqgan</th><th style="width:120px">Davomiylik</th><th style="width:150px">Holat</th></tr></thead>
       <tbody id="imb-rows"></tbody>
     </table>
     <div id="imb-empty" class="empty" style="display:none">Ma'lumot yo'q.</div>
-    <div class="pager"><span id="imb-pginfo"></span></div>
+
+    <h2 style="margin:26px 0 10px;font-size:15px">O'tishlar tarixi — har bir face-id / barmoq izi</h2>
+    <p class="desc" style="color:var(--muted);font-size:13px;margin:0 0 12px">Har bitta skan alohida qator. Bir odam necha marta kirib-chiqsa, hammasi ko'rinadi (oxirgi chiqish bilan almashtirilmaydi).</p>
+    <table>
+      <thead><tr><th style="width:55px">#</th><th style="width:200px">Vaqt</th><th>Xodim</th><th style="width:170px">Hodisa</th></tr></thead>
+      <tbody id="imb-ev-rows"></tbody>
+    </table>
+    <div id="imb-ev-empty" class="empty" style="display:none">Ma'lumot yo'q.</div>
+    <div class="pager"><span id="imb-ev-pginfo"></span></div>
   </section>
 
   <section id="tab-settings" style="display:none">
@@ -476,7 +486,9 @@ document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
 function fmtD(d){return d.toLocaleString('uz',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'});}
 function pad2(n){return (n<10?'0':'')+n;}
 function parseImb(s){if(!s)return null;const d=new Date(String(s).replace(' ','T'));return isNaN(d)?null:d;}
+function fmtImb(s){const d=parseImb(s);return d?fmtD(d):esc(s||'');}
 function durSecs(dur){const m=String(dur||'').match(/^(\d+):(\d{2}):(\d{2})$/);return m?(+m[1])*3600+(+m[2])*60+(+m[3]):0;}
+function imbExit(entry,dur){const sec=durSecs(dur);const d=parseImb(entry);if(!d||sec<=0)return null;return new Date(d.getTime()+sec*1000);}
 let imbBusy=false;
 async function loadImb(){
   if(imbBusy)return;imbBusy=true;
@@ -489,23 +501,36 @@ async function loadImb(){
       (d.results||[]).forEach(r=>sessions.push(r));
       total=d.total_pages||1;page++;
     }while(page<=total && page<=20);
+    sessions.sort((a,b)=>String(b.entry_time||'').localeCompare(String(a.entry_time||'')));
+
+    const tb=$('#imb-rows');tb.innerHTML='';$('#imb-empty').style.display=sessions.length?'none':'';
+    sessions.forEach((r,i)=>{
+      const u=r.user||{};const name=esc(((u.first_name||'')+' '+(u.last_name||'')).trim()||('ID '+(u.id||'')));
+      const ex=imbExit(r.entry_time,r.duration);
+      const exCell=ex?fmtD(ex):'<span class="muted">—</span>';
+      const status=ex?'<span class="pill ok">Chiqib ketgan</span>':'<span class="pill received">🟢 Ichkarida</span>';
+      const tr=document.createElement('tr');
+      tr.innerHTML=`<td class="muted">${i+1}</td><td>${name}</td><td>${fmtImb(r.entry_time)}</td><td>${exCell}</td><td class="muted">${esc(r.duration||'')}</td><td>${status}</td>`;
+      tb.appendChild(tr);
+    });
+
     const events=[];
     sessions.forEach(r=>{
       const u=r.user||{};const name=((u.first_name||'')+' '+(u.last_name||'')).trim()||('ID '+(u.id||''));
       const en=parseImb(r.entry_time);
       if(en)events.push({t:en,name:name,type:'in'});
-      const sec=durSecs(r.duration);
-      if(en&&sec>0)events.push({t:new Date(en.getTime()+sec*1000),name:name,type:'out'});
+      const ex=imbExit(r.entry_time,r.duration);
+      if(ex)events.push({t:ex,name:name,type:'out'});
     });
     events.sort((a,b)=>b.t-a.t);
-    const tb=$('#imb-rows');tb.innerHTML='';$('#imb-empty').style.display=events.length?'none':'';
+    const eb=$('#imb-ev-rows');eb.innerHTML='';$('#imb-ev-empty').style.display=events.length?'none':'';
     events.forEach((e,i)=>{
       const badge=e.type==='in'?'<span class="pill in">🟢 KIRDI</span>':'<span class="pill warn">🔴 CHIQDI</span>';
       const tr=document.createElement('tr');
       tr.innerHTML=`<td class="muted">${i+1}</td><td>${fmtD(e.t)}</td><td>${esc(e.name)}</td><td>${badge}</td>`;
-      tb.appendChild(tr);
+      eb.appendChild(tr);
     });
-    $('#imb-pginfo').textContent=`Jami ${events.length} ta o'tish · ${sessions.length} sessiya`;
+    $('#imb-ev-pginfo').textContent=`Jami ${events.length} ta o'tish · ${sessions.length} sessiya`;
     const now=new Date();$('#imb-updated').textContent='Yangilandi '+pad2(now.getHours())+':'+pad2(now.getMinutes())+':'+pad2(now.getSeconds());
   }finally{imbBusy=false;}
 }
