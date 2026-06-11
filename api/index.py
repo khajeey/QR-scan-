@@ -460,8 +460,25 @@ INDEX_HTML = r'''<!DOCTYPE html>
   .subtabs{display:flex;gap:8px;margin-bottom:16px}
   .btn.subtab{padding:8px 18px}
   .btn.subtab.active{background:var(--accent);border-color:var(--accent);color:#06121f;font-weight:600}
-  .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--panel2);border:1px solid var(--line);padding:12px 20px;border-radius:10px;opacity:0;transition:.25s;pointer-events:none}
+  .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--panel2);border:1px solid var(--line);padding:12px 20px;border-radius:10px;opacity:0;transition:.25s;pointer-events:none;max-width:92vw;text-align:center}
   .toast.show{opacity:1}
+  .tscroll{width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch;border-radius:10px}
+  .tscroll table{min-width:560px}
+  @media(max-width:640px){
+    header{padding:12px 16px;gap:10px}
+    header h1{font-size:15px}
+    header .sub{font-size:11px}
+    nav{padding:0 8px;overflow-x:auto}
+    nav button{padding:12px 12px;white-space:nowrap;font-size:13px}
+    main{padding:14px}
+    th,td{padding:9px 10px}
+    .card{padding:16px}
+    .toolbar{gap:8px}
+    .subtabs{gap:6px}
+    .btn.subtab{flex:1;padding:8px 10px}
+    .urlrow{flex-wrap:wrap}
+    .urlrow input{order:-1;flex-basis:100%;min-width:0}
+  }
 </style>
 </head>
 <body>
@@ -490,19 +507,19 @@ INDEX_HTML = r'''<!DOCTYPE html>
     </div>
 
     <div id="imb-view-dav">
-      <table>
+      <div class="tscroll"><table>
         <thead><tr><th style="width:55px">#</th><th>Xodim</th><th style="width:185px">Bugun birinchi kirgan</th><th style="width:130px">Davomiylik</th><th style="width:170px">Holat (hozir)</th></tr></thead>
         <tbody id="imb-rows"></tbody>
-      </table>
+      </table></div>
       <div id="imb-empty" class="empty" style="display:none">Ma'lumot yo'q.</div>
     </div>
 
     <div id="imb-view-tarix" style="display:none">
       <p class="desc" style="color:var(--muted);font-size:13px;margin:0 0 12px">Har bir kirish/chiqish o'zgarishi yoziladi (panel ochiq turganda har daqiqa tekshiriladi). Bir odam necha marta kirib-chiqsa, hammasi alohida qator bo'lib qoladi — oxirgisi bilan almashtirilmaydi. Vaqt — o'zgarish aniqlangan moment (±1 daqiqa).</p>
-      <table>
+      <div class="tscroll"><table>
         <thead><tr><th style="width:55px">#</th><th style="width:200px">Vaqt</th><th>Xodim</th><th style="width:170px">Hodisa</th></tr></thead>
         <tbody id="imb-ev-rows"></tbody>
-      </table>
+      </table></div>
       <div id="imb-ev-empty" class="empty" style="display:none">Ma'lumot yo'q.</div>
       <div class="pager"><span id="imb-ev-pginfo"></span></div>
     </div>
@@ -554,7 +571,7 @@ function parseImb(s){if(!s)return null;const d=new Date(String(s).replace(' ','T
 function fmtImb(s){const d=parseImb(s);return d?fmtD(d):esc(s||'');}
 function durSecs(dur){const m=String(dur||'').match(/^(\d+):(\d{2}):(\d{2})$/);return m?(+m[1])*3600+(+m[2])*60+(+m[3]):0;}
 function imbExit(entry,dur){const sec=durSecs(dur);const d=parseImb(entry);if(!d||sec<=0)return null;return new Date(d.getTime()+sec*1000);}
-let imbBusy=false;
+let imbBusy=false,imbRows=[],imbEvents=[];
 async function loadImb(){
   if(imbBusy)return;imbBusy=true;
   try{
@@ -580,17 +597,8 @@ async function loadImb(){
     imbRows=rows;
     renderImbDav();
 
-    const events=(sync.events||[]).slice().reverse();
-    const eb=$('#imb-ev-rows');eb.innerHTML='';$('#imb-ev-empty').style.display=events.length?'none':'';
-    events.forEach((e,i)=>{
-      const badge=e.type==='in'?'<span class="pill in">🟢 KIRDI</span>':'<span class="pill warn">🔴 CHIQDI</span>';
-      const d=new Date(e.t);
-      const tr=document.createElement('tr');
-      tr.innerHTML=`<td class="muted">${i+1}</td><td>${isNaN(d)?esc(e.t):fmtD(d)}</td><td>${esc(e.name)}</td><td>${badge}</td>`;
-      eb.appendChild(tr);
-    });
-    $('#imb-ev-pginfo').textContent=`Jami ${events.length} ta yozilgan o'tish`;
-    if(events.length===0)$('#imb-ev-empty').textContent="Hozircha yozilgan o'tish yo'q — birinchi o'zgarish (kirish/chiqish) ro'y berganda paydo bo'ladi.";
+    imbEvents=(sync.events||[]).slice().reverse();
+    renderImbEv();
     const insideN=rows.filter(r=>r.at_work).length;
     const now=new Date();$('#imb-updated').textContent='Yangilandi '+pad2(now.getHours())+':'+pad2(now.getMinutes())+':'+pad2(now.getSeconds())+' · ichkarida '+insideN;
   }finally{imbBusy=false;}
@@ -607,8 +615,23 @@ function renderImbDav(){
     tb.appendChild(tr);
   });
 }
+function renderImbEv(){
+  const q=($('#imb-q').value||'').trim().toLowerCase();
+  const events=q?imbEvents.filter(e=>String(e.name).toLowerCase().includes(q)):imbEvents;
+  const eb=$('#imb-ev-rows');eb.innerHTML='';$('#imb-ev-empty').style.display=events.length?'none':'';
+  events.forEach((e,i)=>{
+    const badge=e.type==='in'?'<span class="pill in">🟢 KIRDI</span>':'<span class="pill warn">🔴 CHIQDI</span>';
+    const d=new Date(e.t);
+    const tr=document.createElement('tr');
+    tr.innerHTML=`<td class="muted">${i+1}</td><td>${isNaN(d)?esc(e.t):fmtD(d)}</td><td>${esc(e.name)}</td><td>${badge}</td>`;
+    eb.appendChild(tr);
+  });
+  $('#imb-ev-pginfo').textContent=q?`${events.length} / ${imbEvents.length} ta o'tish`:`Jami ${imbEvents.length} ta yozilgan o'tish`;
+  if(imbEvents.length===0)$('#imb-ev-empty').textContent="Hozircha yozilgan o'tish yo'q — birinchi o'zgarish (kirish/chiqish) ro'y berganda paydo bo'ladi.";
+  else if(events.length===0)$('#imb-ev-empty').textContent="Qidiruvga mos o'tish topilmadi.";
+}
 $('#imb-refresh').onclick=()=>loadImb();
-$('#imb-q').oninput=()=>renderImbDav();
+$('#imb-q').oninput=()=>{renderImbDav();renderImbEv();};
 document.querySelectorAll('.subtab').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('.subtab').forEach(x=>x.classList.remove('active'));
   b.classList.add('active');
