@@ -327,7 +327,8 @@ async def test_url(request: Request):
     if not url:
         return {"ok": False, "error": "URL bo'sh"}
     test_scan = {"code": "TEST-123", "device": "cloud-test",
-                 "source": "cloud-test", "status": "received", "scanned_at": "test"}
+                 "source": "cloud-test", "status": "received",
+                 "scanned_at": datetime.now(timezone.utc).isoformat()}
     try:
         with httpx.Client(timeout=10) as c:
             r = _post_scan(c, url, test_scan, timeout=10)
