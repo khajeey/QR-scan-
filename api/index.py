@@ -12,6 +12,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Res
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
 INGEST_TOKEN = os.environ.get("INGEST_TOKEN", "")
+IMB_BASE = os.environ.get("IMB_BASE", "https://imb.imbtruck.uz").rstrip("/")
 
 REST = SUPABASE_URL + "/rest/v1"
 HEADERS = {
@@ -285,6 +286,20 @@ async def test_url(request: Request):
         return {"ok": False, "error": str(exc)}
 
 
+@app.get("/api/v1/imb/attendance")
+def imb_attendance(page: int = 1, page_size: int = 50):
+    page = max(1, page)
+    page_size = max(1, min(page_size, 200))
+    url = IMB_BASE + "/api/v1/attendance/daily-attendance/?page=" + str(page) + "&page_size=" + str(page_size)
+    try:
+        with httpx.Client(timeout=15) as c:
+            r = c.get(url, headers={"Accept": "application/json"})
+        r.raise_for_status()
+        return JSONResponse(r.json())
+    except httpx.HTTPError as exc:
+        return _err(502, "IMB o'qish xatosi: " + str(exc))
+
+
 @app.get("/", response_class=HTMLResponse)
 def dashboard():
     return INDEX_HTML
@@ -354,6 +369,7 @@ INDEX_HTML = r'''<!DOCTYPE html>
 </header>
 <nav>
   <button data-tab="scans" class="active">Skanlar</button>
+  <button data-tab="imb">Davomat (IMB)</button>
   <button data-tab="settings">Sozlamalar</button>
 </nav>
 <main>
@@ -373,6 +389,20 @@ INDEX_HTML = r'''<!DOCTYPE html>
   </table>
   <div id="empty" class="empty" style="display:none">Hozircha skan yo'q.</div>
   <div class="pager"><span id="pginfo"></span><button class="btn" id="prev">‹</button><button class="btn" id="next">›</button></div>
+  </section>
+
+  <section id="tab-imb" style="display:none">
+    <div class="toolbar">
+      <span class="muted" style="flex:1">IMB tizimidan jonli davomat (<code>imb.imbtruck.uz</code>). Qurilma o'sha yerga yuboradi — bu yerda faqat o'qiymiz.</span>
+      <label class="chk"><input type="checkbox" id="imb-auto" checked> Avto</label>
+      <button class="btn" id="imb-refresh">Yangilash</button>
+    </div>
+    <table>
+      <thead><tr><th style="width:55px">#</th><th style="width:200px">Kirgan vaqti</th><th>Xodim</th><th style="width:140px">Davomiylik</th></tr></thead>
+      <tbody id="imb-rows"></tbody>
+    </table>
+    <div id="imb-empty" class="empty" style="display:none">Ma'lumot yo'q.</div>
+    <div class="pager"><span id="imb-pginfo"></span><button class="btn" id="imb-prev">‹</button><button class="btn" id="imb-next">›</button></div>
   </section>
 
   <section id="tab-settings" style="display:none">
@@ -436,9 +466,33 @@ document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('nav button').forEach(x=>x.classList.remove('active'));
   b.classList.add('active');
   $('#tab-scans').style.display=b.dataset.tab==='scans'?'':'none';
+  $('#tab-imb').style.display=b.dataset.tab==='imb'?'':'none';
   $('#tab-settings').style.display=b.dataset.tab==='settings'?'':'none';
   if(b.dataset.tab==='settings')loadConfig();
+  if(b.dataset.tab==='imb')loadImb();
 });
+
+let imbState={page:1,page_size:50,total_pages:1};
+function fmtImb(s){if(!s)return '';const d=new Date(s.replace(' ','T'));if(isNaN(d))return esc(s);return d.toLocaleString('uz',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'});}
+async function loadImb(){
+  let d;
+  try{d=await api('/api/v1/imb/attendance?page='+imbState.page+'&page_size='+imbState.page_size);}
+  catch(e){d={results:[],total_pages:1};}
+  const rows=d.results||[];imbState.total_pages=d.total_pages||1;
+  const tb=$('#imb-rows');tb.innerHTML='';$('#imb-empty').style.display=rows.length?'none':'';
+  rows.forEach(r=>{
+    const u=r.user||{};const name=esc(((u.first_name||'')+' '+(u.last_name||'')).trim()||('ID '+(u.id||'')));
+    const tr=document.createElement('tr');
+    tr.innerHTML=`<td class="muted">${r.id}</td><td>${fmtImb(r.entry_time)}</td><td>${name}</td><td class="muted">${esc(r.duration||'')}</td>`;
+    tb.appendChild(tr);
+  });
+  $('#imb-pginfo').textContent=`Sahifa ${imbState.page} / ${imbState.total_pages}`;
+  $('#imb-prev').disabled=imbState.page<=1;$('#imb-next').disabled=imbState.page>=imbState.total_pages;
+}
+$('#imb-refresh').onclick=()=>loadImb();
+$('#imb-prev').onclick=()=>{if(imbState.page>1){imbState.page--;loadImb();}};
+$('#imb-next').onclick=()=>{if(imbState.page<imbState.total_pages){imbState.page++;loadImb();}};
+setInterval(()=>{if($('#imb-auto').checked && $('#tab-imb').style.display!=='none'){loadImb();}},5000);
 function urlRow(val){
   const div=document.createElement('div');div.className='urlrow';
   div.innerHTML=`<span class="dot"></span><input value="${esc(val)}" placeholder="https://..."><button class="btn" data-act="test">Tekshirish</button><button class="btn ghost" data-act="del">✕</button>`;
