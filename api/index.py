@@ -411,36 +411,16 @@ INDEX_HTML = r'''<!DOCTYPE html>
 <body>
 <header>
   <div class="logo">QR</div>
-  <div><h1>QR Cloud Panel</h1><div class="sub">Barcha kompyuterlardan skan ma'lumotlari</div></div>
+  <div><h1>IMB Davomat Panel</h1><div class="sub">Jonli kirish-chiqish (face-id / barmoq izi)</div></div>
   <div class="spacer"></div>
-  <div class="stat"><b id="st-today">0</b><span>Bugun</span></div>
-  <div class="stat"><b id="st-total">0</b><span>Jami</span></div>
 </header>
 <nav>
-  <button data-tab="scans" class="active">Skanlar</button>
-  <button data-tab="imb">Davomat (IMB)</button>
+  <button data-tab="imb" class="active">Davomat (IMB)</button>
   <button data-tab="settings">Sozlamalar</button>
 </nav>
 <main>
-  <section id="tab-scans">
-  <div class="toolbar">
-    <input id="q" class="grow" placeholder="Kod, qurilma yoki manba bo'yicha qidirish...">
-    <input id="from" type="date" title="Dan">
-    <input id="to" type="date" title="Gacha">
-    <button class="btn" id="clear">Tozalash</button>
-    <label class="chk"><input type="checkbox" id="auto" checked> Avto</label>
-    <button class="btn" id="refresh">Yangilash</button>
-    <button class="btn" id="csv">CSV</button>
-  </div>
-  <table>
-    <thead><tr><th style="width:55px">#</th><th style="width:185px">Vaqt</th><th>Kod</th><th style="width:130px">Manba</th><th style="width:200px">Qurilma</th><th style="width:100px">Holat</th></tr></thead>
-    <tbody id="rows"></tbody>
-  </table>
-  <div id="empty" class="empty" style="display:none">Hozircha skan yo'q.</div>
-  <div class="pager"><span id="pginfo"></span><button class="btn" id="prev">‹</button><button class="btn" id="next">›</button></div>
-  </section>
 
-  <section id="tab-imb" style="display:none">
+  <section id="tab-imb">
     <div class="toolbar">
       <span class="muted" style="flex:1">IMB tizimidan jonli davomat (<code>imb.imbtruck.uz</code>). Qurilma o'sha yerga yuboradi — bu yerda faqat o'qiymiz.</span>
       <span class="muted" id="imb-updated"></span>
@@ -500,39 +480,11 @@ INDEX_HTML = r'''<!DOCTYPE html>
 <script>
 const $=s=>document.querySelector(s);
 const api=(p)=>fetch(p).then(r=>r.json());
-let state={offset:0,limit:50,total:0};
 function esc(s){return (s==null?'':String(s)).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
-function fmt(iso){if(!iso)return '';const d=new Date(iso);if(isNaN(d))return esc(iso);return d.toLocaleString('uz',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'});}
-function shortDev(d){if(!d)return '';const m=String(d).match(/VID_[0-9A-Fa-f]{4}|PID_[0-9A-Fa-f]{4}/g);return m?m.join(' '):(String(d).length>34?String(d).slice(0,34)+'…':d);}
-function qstr(){const u=new URLSearchParams();if($('#q').value.trim())u.set('q',$('#q').value.trim());if($('#from').value)u.set('from',$('#from').value);if($('#to').value)u.set('to',$('#to').value);return u;}
-async function load(){
-  const u=qstr();u.set('limit',state.limit);u.set('offset',state.offset);
-  const d=await api('/api/v1/scans?'+u.toString());state.total=d.total||0;
-  const tb=$('#rows');tb.innerHTML='';$('#empty').style.display=(d.data&&d.data.length)?'none':'';
-  (d.data||[]).forEach(r=>{
-    const cls=r.status==='error'?'error':(r.status==='ok'?'ok':'received');
-    const tr=document.createElement('tr');
-    tr.innerHTML=`<td class="muted">${r.id}</td><td>${fmt(r.created_at)}</td><td class="code">${esc(r.code)}</td><td>${r.source?'<span class="src">'+esc(r.source)+'</span>':'<span class="muted">—</span>'}</td><td class="muted">${esc(shortDev(r.device))}</td><td><span class="pill ${cls}">${esc(r.status||'-')}</span></td>`;
-    tb.appendChild(tr);
-  });
-  const from=state.total?state.offset+1:0,to=Math.min(state.offset+state.limit,state.total);
-  $('#pginfo').textContent=`${from}–${to} / ${state.total}`;
-  $('#prev').disabled=state.offset<=0;$('#next').disabled=state.offset+state.limit>=state.total;
-}
-async function loadStats(){const s=await api('/api/v1/stats');$('#st-today').textContent=s.today||0;$('#st-total').textContent=s.total||0;}
-$('#refresh').onclick=()=>{load();loadStats();};
-$('#clear').onclick=()=>{$('#q').value='';$('#from').value='';$('#to').value='';state.offset=0;load();};
-$('#q').oninput=()=>{state.offset=0;load();};
-$('#from').onchange=$('#to').onchange=()=>{state.offset=0;load();};
-$('#prev').onclick=()=>{state.offset=Math.max(0,state.offset-state.limit);load();};
-$('#next').onclick=()=>{state.offset+=state.limit;load();};
-$('#csv').onclick=()=>{location.href='/api/v1/scans.csv?'+qstr().toString();};
-setInterval(()=>{if($('#auto').checked && $('#tab-scans').style.display!=='none'){load();loadStats();}},5000);
 
 document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('nav button').forEach(x=>x.classList.remove('active'));
   b.classList.add('active');
-  $('#tab-scans').style.display=b.dataset.tab==='scans'?'':'none';
   $('#tab-imb').style.display=b.dataset.tab==='imb'?'':'none';
   $('#tab-settings').style.display=b.dataset.tab==='settings'?'':'none';
   if(b.dataset.tab==='settings')loadConfig();
@@ -641,7 +593,7 @@ $('#save').onclick=async()=>{
   await loadConfig();toast('Saqlandi ('+(r.forward_urls||[]).length+' ta manzil)');
 };
 function toast(m){const t=$('#toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2200);}
-load();loadStats();
+loadImb();
 </script>
 </body>
 </html>'''
