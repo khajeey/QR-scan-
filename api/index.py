@@ -366,7 +366,7 @@ def _imb_at_work_users():
 
 
 @app.get("/api/v1/imb/sync")
-def imb_sync():
+def imb_sync(src: str = "unknown"):
     try:
         users = _imb_at_work_users()
     except httpx.HTTPError as exc:
@@ -399,7 +399,11 @@ def imb_sync():
                 db_set_setting("imb_events", events)
         except httpx.HTTPError:
             pass
-    return {"stored": True, "users": users, "events": events, "new": len(new_events)}
+    try:
+        db_set_setting("imb_last_sync", {"t": now, "src": src})
+    except httpx.HTTPError:
+        pass
+    return {"stored": True, "users": users, "events": events, "new": len(new_events), "src": src}
 
 
 def _imb_daily_sessions(max_pages=10):
@@ -445,7 +449,8 @@ def imb_state():
     events = db_get_setting("imb_events", []) if _configured() else []
     if not isinstance(events, list):
         events = []
-    return {"rows": rows, "events": events, "inside": sum(1 for r in rows if r["at_work"])}
+    last_sync = db_get_setting("imb_last_sync", None) if _configured() else None
+    return {"rows": rows, "events": events, "inside": sum(1 for r in rows if r["at_work"]), "last_sync": last_sync}
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -543,6 +548,7 @@ INDEX_HTML = r'''<!DOCTYPE html>
     <div class="toolbar">
       <input class="grow" id="imb-q" placeholder="Ism yoki familya bo'yicha qidirish...">
       <span class="muted" id="imb-updated"></span>
+      <span class="muted" id="imb-sync"></span>
       <label class="chk"><input type="checkbox" id="imb-auto" checked> Avto (1 daq)</label>
       <button class="btn" id="imb-refresh">Yangilash</button>
     </div>
@@ -625,6 +631,12 @@ function fetchJSON(url,ms){
     .finally(()=>clearTimeout(tid));
 }
 function setImbStatus(msg,isErr){const el=$('#imb-updated');el.textContent=msg;el.style.color=isErr?'var(--err)':'var(--muted)';}
+function renderSync(ls){const se=$('#imb-sync');if(!se)return;if(!ls||!ls.t){se.textContent='';return;}
+  const age=Math.round((Date.now()-new Date(ls.t).getTime())/1000);
+  const who=(ls.src&&ls.src!=='unknown')?(' ['+ls.src+']'):'';
+  if(age>180){se.textContent="⚠ Avto-yozuv to'xtagan ("+(age>=3600?Math.round(age/60)+'daq':age+'s')+" oldin)"+who;se.style.color='var(--err)';}
+  else{se.textContent='· avto-yozuv: '+age+'s oldin'+who;se.style.color='var(--ok)';}
+}
 async function loadImb(){
   if(imbBusy)return;imbBusy=true;
   if(!imbLastOk)setImbStatus('Yuklanmoqda...',false);
@@ -639,6 +651,7 @@ async function loadImb(){
     const insideN=(d.inside!=null)?d.inside:rows.filter(r=>r.at_work).length;
     const now=new Date();
     setImbStatus('Yangilandi '+pad2(now.getHours())+':'+pad2(now.getMinutes())+':'+pad2(now.getSeconds())+' · ichkarida '+insideN,false);
+    renderSync(d.last_sync);
   }catch(e){
     const secs=imbLastOk?Math.round((Date.now()-imbLastOk)/1000):0;
     const reason=(e&&e.name==='AbortError')?'javob kechikdi':(e&&e.message||e);
