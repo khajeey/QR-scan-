@@ -355,6 +355,9 @@ INDEX_HTML = r'''<!DOCTYPE html>
   .dot{width:8px;height:8px;border-radius:50%;background:var(--muted);flex:none}
   .dot.ok{background:var(--ok)}.dot.err{background:var(--err)}
   .hint{font-size:12px;color:var(--muted);margin-top:8px}
+  .subtabs{display:flex;gap:8px;margin-bottom:16px}
+  .btn.subtab{padding:8px 18px}
+  .btn.subtab.active{background:var(--accent);border-color:var(--accent);color:#06121f;font-weight:600}
   .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--panel2);border:1px solid var(--line);padding:12px 20px;border-radius:10px;opacity:0;transition:.25s;pointer-events:none}
   .toast.show{opacity:1}
 </style>
@@ -399,21 +402,28 @@ INDEX_HTML = r'''<!DOCTYPE html>
       <button class="btn" id="imb-refresh">Yangilash</button>
     </div>
 
-    <h2 style="margin:6px 0 10px;font-size:15px">Davomat — xodimlar holati</h2>
-    <table>
-      <thead><tr><th style="width:55px">#</th><th>Xodim</th><th style="width:175px">Kirgan</th><th style="width:175px">Chiqgan</th><th style="width:120px">Davomiylik</th><th style="width:150px">Holat</th></tr></thead>
-      <tbody id="imb-rows"></tbody>
-    </table>
-    <div id="imb-empty" class="empty" style="display:none">Ma'lumot yo'q.</div>
+    <div class="subtabs">
+      <button class="btn subtab active" data-sub="dav">Davomat</button>
+      <button class="btn subtab" data-sub="tarix">Tarix</button>
+    </div>
 
-    <h2 style="margin:26px 0 10px;font-size:15px">O'tishlar tarixi — har bir face-id / barmoq izi</h2>
-    <p class="desc" style="color:var(--muted);font-size:13px;margin:0 0 12px">Har bitta skan alohida qator. Bir odam necha marta kirib-chiqsa, hammasi ko'rinadi (oxirgi chiqish bilan almashtirilmaydi).</p>
-    <table>
-      <thead><tr><th style="width:55px">#</th><th style="width:200px">Vaqt</th><th>Xodim</th><th style="width:170px">Hodisa</th></tr></thead>
-      <tbody id="imb-ev-rows"></tbody>
-    </table>
-    <div id="imb-ev-empty" class="empty" style="display:none">Ma'lumot yo'q.</div>
-    <div class="pager"><span id="imb-ev-pginfo"></span></div>
+    <div id="imb-view-dav">
+      <table>
+        <thead><tr><th style="width:55px">#</th><th>Xodim</th><th style="width:175px">Kirgan</th><th style="width:175px">Chiqgan</th><th style="width:120px">Davomiylik</th><th style="width:150px">Holat</th></tr></thead>
+        <tbody id="imb-rows"></tbody>
+      </table>
+      <div id="imb-empty" class="empty" style="display:none">Ma'lumot yo'q.</div>
+    </div>
+
+    <div id="imb-view-tarix" style="display:none">
+      <p class="desc" style="color:var(--muted);font-size:13px;margin:0 0 12px">Har bitta face-id / barmoq izi skani alohida qator. Bir odam necha marta kirib-chiqsa, hammasi ko'rinadi (oxirgi chiqish bilan almashtirilmaydi).</p>
+      <table>
+        <thead><tr><th style="width:55px">#</th><th style="width:200px">Vaqt</th><th>Xodim</th><th style="width:170px">Hodisa</th></tr></thead>
+        <tbody id="imb-ev-rows"></tbody>
+      </table>
+      <div id="imb-ev-empty" class="empty" style="display:none">Ma'lumot yo'q.</div>
+      <div class="pager"><span id="imb-ev-pginfo"></span></div>
+    </div>
   </section>
 
   <section id="tab-settings" style="display:none">
@@ -535,6 +545,12 @@ async function loadImb(){
   }finally{imbBusy=false;}
 }
 $('#imb-refresh').onclick=()=>loadImb();
+document.querySelectorAll('.subtab').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('.subtab').forEach(x=>x.classList.remove('active'));
+  b.classList.add('active');
+  $('#imb-view-dav').style.display=b.dataset.sub==='dav'?'':'none';
+  $('#imb-view-tarix').style.display=b.dataset.sub==='tarix'?'':'none';
+});
 setInterval(()=>{if($('#imb-auto').checked && $('#tab-imb').style.display!=='none'){loadImb();}},60000);
 function urlRow(val){
   const div=document.createElement('div');div.className='urlrow';
