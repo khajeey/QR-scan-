@@ -122,18 +122,48 @@ def db_set_setting(key, value):
     return r.json()
 
 
-def forward_scan(scan, urls):
-    payload = json.dumps({
+def _body_qr_scan(scan):
+    return {
         "event": "qr_scan",
         "data": scan.get("code"),
         "device": scan.get("device"),
         "source": scan.get("source"),
         "scanned_at": scan.get("scanned_at") or scan.get("created_at"),
-    }, ensure_ascii=False).encode("utf-8")
+    }
+
+
+def _body_hikvision(scan):
+    status = scan.get("status") or "received"
+    if status in ("checkIn", "checkOut"):
+        attendance = status
+    else:
+        attendance = "checkIn"
+    return {
+        "AccessControllerEvent": {
+            "employeeNoString": str(scan.get("code") or ""),
+            "name": str(scan.get("name") or ""),
+            "attendanceStatus": attendance,
+            "deviceName": str(scan.get("device") or ""),
+        },
+        "ipAddress": str(scan.get("ip_address") or ""),
+        "macAddress": str(scan.get("mac_address") or ""),
+        "dateTime": scan.get("scanned_at") or scan.get("created_at") or "",
+        "deviceID": str(scan.get("source") or scan.get("device") or ""),
+    }
+
+
+def _body_for_url(url, scan):
+    if "/attendance/hikvision" in url:
+        return _body_hikvision(scan)
+    return _body_qr_scan(scan)
+
+
+def forward_scan(scan, urls):
     for url in urls:
+        body = json.dumps(_body_for_url(url, scan), ensure_ascii=False).encode("utf-8")
         try:
             with httpx.Client(timeout=8) as c:
-                c.post(url, content=payload, headers={"Content-Type": "application/json; charset=utf-8"})
+                c.post(url, content=body, headers={"Content-Type": "application/json; charset=utf-8"})
         except Exception:
             pass
 
@@ -276,8 +306,9 @@ async def test_url(request: Request):
     url = (payload.get("url") or "").strip()
     if not url:
         return {"ok": False, "error": "URL bo'sh"}
-    body = json.dumps({"event": "qr_scan_test", "data": "TEST-123",
-                       "device": "cloud-test", "scanned_at": "test"}).encode("utf-8")
+    test_scan = {"code": "TEST-123", "device": "cloud-test",
+                 "source": "cloud-test", "status": "received", "scanned_at": "test"}
+    body = json.dumps(_body_for_url(url, test_scan), ensure_ascii=False).encode("utf-8")
     try:
         with httpx.Client(timeout=10) as c:
             r = c.post(url, content=body, headers={"Content-Type": "application/json"})
@@ -422,7 +453,7 @@ INDEX_HTML = r'''<!DOCTYPE html>
 
   <section id="tab-imb">
     <div class="toolbar">
-      <span class="muted" style="flex:1">IMB tizimidan jonli davomat (<code>imb.imbtruck.uz</code>). Qurilma o'sha yerga yuboradi — bu yerda faqat o'qiymiz.</span>
+      <input class="grow" id="imb-q" placeholder="Ism yoki familya bo'yicha qidirish...">
       <span class="muted" id="imb-updated"></span>
       <label class="chk"><input type="checkbox" id="imb-auto" checked> Avto (1 daq)</label>
       <button class="btn" id="imb-refresh">Yangilash</button>
@@ -491,6 +522,7 @@ document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
   if(b.dataset.tab==='imb')loadImb();
 });
 
+let imbRows=[];
 function fmtD(d){return d.toLocaleString('uz',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'});}
 function pad2(n){return (n<10?'0':'')+n;}
 function parseImb(s){if(!s)return null;const d=new Date(String(s).replace(' ','T'));return isNaN(d)?null:d;}
@@ -520,16 +552,8 @@ async function loadImb(){
       return {name:u.full_name||('ID '+u.id),at_work:!!u.at_work,entry:s.entry_time||'',dur:s.duration||''};
     });
     rows.sort((a,b)=>(b.at_work-a.at_work)||String(b.entry||'').localeCompare(String(a.entry||'')));
-    const tb=$('#imb-rows');tb.innerHTML='';$('#imb-empty').style.display=rows.length?'none':'';
-    let insideN=0;
-    rows.forEach((r,i)=>{
-      if(r.at_work)insideN++;
-      const status=r.at_work?'<span class="pill in">🟢 Ichkarida</span>':'<span class="pill ok">Tashqarida</span>';
-      const entry=r.entry?fmtImb(r.entry):'<span class="muted">—</span>';
-      const tr=document.createElement('tr');
-      tr.innerHTML=`<td class="muted">${i+1}</td><td>${esc(r.name)}</td><td>${entry}</td><td class="muted">${esc(r.dur||'')}</td><td>${status}</td>`;
-      tb.appendChild(tr);
-    });
+    imbRows=rows;
+    renderImbDav();
 
     const events=(sync.events||[]).slice().reverse();
     const eb=$('#imb-ev-rows');eb.innerHTML='';$('#imb-ev-empty').style.display=events.length?'none':'';
@@ -542,10 +566,24 @@ async function loadImb(){
     });
     $('#imb-ev-pginfo').textContent=`Jami ${events.length} ta yozilgan o'tish`;
     if(events.length===0)$('#imb-ev-empty').textContent="Hozircha yozilgan o'tish yo'q — birinchi o'zgarish (kirish/chiqish) ro'y berganda paydo bo'ladi.";
+    const insideN=rows.filter(r=>r.at_work).length;
     const now=new Date();$('#imb-updated').textContent='Yangilandi '+pad2(now.getHours())+':'+pad2(now.getMinutes())+':'+pad2(now.getSeconds())+' · ichkarida '+insideN;
   }finally{imbBusy=false;}
 }
+function renderImbDav(){
+  const q=($('#imb-q').value||'').trim().toLowerCase();
+  const rows=q?imbRows.filter(r=>String(r.name).toLowerCase().includes(q)):imbRows;
+  const tb=$('#imb-rows');tb.innerHTML='';$('#imb-empty').style.display=rows.length?'none':'';
+  rows.forEach((r,i)=>{
+    const status=r.at_work?'<span class="pill in">🟢 Ichkarida</span>':'<span class="pill ok">Tashqarida</span>';
+    const entry=r.entry?fmtImb(r.entry):'<span class="muted">—</span>';
+    const tr=document.createElement('tr');
+    tr.innerHTML=`<td class="muted">${i+1}</td><td>${esc(r.name)}</td><td>${entry}</td><td class="muted">${esc(r.dur||'')}</td><td>${status}</td>`;
+    tb.appendChild(tr);
+  });
+}
 $('#imb-refresh').onclick=()=>loadImb();
+$('#imb-q').oninput=()=>renderImbDav();
 document.querySelectorAll('.subtab').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('.subtab').forEach(x=>x.classList.remove('active'));
   b.classList.add('active');
