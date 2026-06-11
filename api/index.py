@@ -398,7 +398,7 @@ INDEX_HTML = r'''<!DOCTYPE html>
       <button class="btn" id="imb-refresh">Yangilash</button>
     </div>
     <table>
-      <thead><tr><th style="width:55px">#</th><th style="width:200px">Kirgan vaqti</th><th>Xodim</th><th style="width:140px">Davomiylik</th></tr></thead>
+      <thead><tr><th style="width:55px">#</th><th>Xodim</th><th style="width:175px">Kirgan</th><th style="width:175px">Chiqgan</th><th style="width:120px">Davomiylik</th><th style="width:150px">Holat</th></tr></thead>
       <tbody id="imb-rows"></tbody>
     </table>
     <div id="imb-empty" class="empty" style="display:none">Ma'lumot yo'q.</div>
@@ -473,17 +473,23 @@ document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
 });
 
 let imbState={page:1,page_size:50,total_pages:1};
-function fmtImb(s){if(!s)return '';const d=new Date(s.replace(' ','T'));if(isNaN(d))return esc(s);return d.toLocaleString('uz',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'});}
+function fmtD(d){return d.toLocaleString('uz',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'});}
+function fmtImb(s){if(!s)return '';const d=new Date(s.replace(' ','T'));if(isNaN(d))return esc(s);return fmtD(d);}
+function imbExit(entry,dur){if(!entry||!dur||dur==='00:00:00')return null;const m=String(dur).match(/^(\d+):(\d{2}):(\d{2})$/);if(!m)return null;const d=new Date(String(entry).replace(' ','T'));if(isNaN(d))return null;d.setSeconds(d.getSeconds()+(+m[1])*3600+(+m[2])*60+(+m[3]));return d;}
 async function loadImb(){
   let d;
   try{d=await api('/api/v1/imb/attendance?page='+imbState.page+'&page_size='+imbState.page_size);}
   catch(e){d={results:[],total_pages:1};}
   const rows=d.results||[];imbState.total_pages=d.total_pages||1;
+  rows.sort((a,b)=>String(b.entry_time||'').localeCompare(String(a.entry_time||'')));
   const tb=$('#imb-rows');tb.innerHTML='';$('#imb-empty').style.display=rows.length?'none':'';
   rows.forEach(r=>{
     const u=r.user||{};const name=esc(((u.first_name||'')+' '+(u.last_name||'')).trim()||('ID '+(u.id||'')));
+    const ex=imbExit(r.entry_time,r.duration);
+    const exCell=ex?fmtD(ex):'<span class="muted">—</span>';
+    const status=ex?'<span class="pill ok">Chiqib ketgan</span>':'<span class="pill received">🟢 Ichkarida</span>';
     const tr=document.createElement('tr');
-    tr.innerHTML=`<td class="muted">${r.id}</td><td>${fmtImb(r.entry_time)}</td><td>${name}</td><td class="muted">${esc(r.duration||'')}</td>`;
+    tr.innerHTML=`<td class="muted">${r.id}</td><td>${name}</td><td>${fmtImb(r.entry_time)}</td><td>${exCell}</td><td class="muted">${esc(r.duration||'')}</td><td>${status}</td>`;
     tb.appendChild(tr);
   });
   $('#imb-pginfo').textContent=`Sahifa ${imbState.page} / ${imbState.total_pages}`;
