@@ -402,6 +402,52 @@ def imb_sync():
     return {"stored": True, "users": users, "events": events, "new": len(new_events)}
 
 
+def _imb_daily_sessions(max_pages=10):
+    sessions = []
+    page, total = 1, 1
+    while page <= total and page <= max_pages:
+        url = IMB_BASE + "/api/v1/attendance/daily-attendance/?page=" + str(page) + "&page_size=200"
+        with httpx.Client(timeout=12) as c:
+            r = c.get(url, headers={"Accept": "application/json"})
+        r.raise_for_status()
+        d = r.json()
+        for row in d.get("results", []):
+            sessions.append(row)
+        total = d.get("total_pages") or 1
+        page += 1
+    return sessions
+
+
+@app.get("/api/v1/imb/state")
+def imb_state():
+    try:
+        users = _imb_at_work_users()
+    except httpx.HTTPError as exc:
+        return _err(502, "IMB at-work o'qish xatosi: " + str(exc))
+    by_id = {}
+    try:
+        for s in _imb_daily_sessions():
+            u = s.get("user") or {}
+            by_id[str(u.get("id"))] = s
+    except httpx.HTTPError:
+        by_id = {}
+    rows = []
+    for u in users:
+        uid = str(u.get("id"))
+        s = by_id.get(uid, {})
+        rows.append({
+            "id": u.get("id"),
+            "name": u.get("full_name") or ("ID " + uid),
+            "at_work": bool(u.get("at_work")),
+            "entry_time": s.get("entry_time") or "",
+            "duration": s.get("duration") or "",
+        })
+    events = db_get_setting("imb_events", []) if _configured() else []
+    if not isinstance(events, list):
+        events = []
+    return {"rows": rows, "events": events, "inside": sum(1 for r in rows if r["at_work"])}
+
+
 @app.get("/", response_class=HTMLResponse)
 def dashboard():
     return INDEX_HTML
@@ -570,36 +616,33 @@ function parseImb(s){if(!s)return null;const d=new Date(String(s).replace(' ','T
 function fmtImb(s){const d=parseImb(s);return d?fmtD(d):esc(s||'');}
 function durSecs(dur){const m=String(dur||'').match(/^(\d+):(\d{2}):(\d{2})$/);return m?(+m[1])*3600+(+m[2])*60+(+m[3]):0;}
 function imbExit(entry,dur){const sec=durSecs(dur);const d=parseImb(entry);if(!d||sec<=0)return null;return new Date(d.getTime()+sec*1000);}
-let imbBusy=false,imbRows=[],imbEvents=[];
+let imbBusy=false,imbRows=[],imbEvents=[],imbLastOk=0;
+function fetchJSON(url,ms){
+  const ctl=new AbortController();
+  const tid=setTimeout(()=>ctl.abort(),ms||12000);
+  return fetch(url,{signal:ctl.signal,cache:'no-store'})
+    .then(r=>{if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
+    .finally(()=>clearTimeout(tid));
+}
+function setImbStatus(msg,isErr){const el=$('#imb-updated');el.textContent=msg;el.style.color=isErr?'var(--err)':'var(--muted)';}
 async function loadImb(){
   if(imbBusy)return;imbBusy=true;
+  if(!imbLastOk)setImbStatus('Yuklanmoqda...',false);
   try{
-    let sync={users:[],events:[]};
-    try{sync=await api('/api/v1/imb/sync');}catch(e){}
-    const users=sync.users||[];
-    let page=1,total=1;const sessions=[];
-    do{
-      let d;
-      try{d=await api('/api/v1/imb/attendance?page='+page+'&page_size=200');}
-      catch(e){d={results:[],total_pages:total};}
-      (d.results||[]).forEach(r=>sessions.push(r));
-      total=d.total_pages||1;page++;
-    }while(page<=total && page<=20);
-    const byId={};
-    sessions.forEach(r=>{const u=r.user||{};byId[String(u.id)]=r;});
-
-    const rows=users.map(u=>{
-      const s=byId[String(u.id)]||{};
-      return {name:u.full_name||('ID '+u.id),at_work:!!u.at_work,entry:s.entry_time||'',dur:s.duration||''};
-    });
+    const d=await fetchJSON('/api/v1/imb/state',12000);
+    const rows=(d.rows||[]).map(r=>({name:r.name||('ID '+r.id),at_work:!!r.at_work,entry:r.entry_time||'',dur:r.duration||''}));
     rows.sort((a,b)=>(b.at_work-a.at_work)||String(b.entry||'').localeCompare(String(a.entry||'')));
     imbRows=rows;
-    renderImbDav();
-
-    imbEvents=(sync.events||[]).slice().reverse();
-    renderImbEv();
-    const insideN=rows.filter(r=>r.at_work).length;
-    const now=new Date();$('#imb-updated').textContent='Yangilandi '+pad2(now.getHours())+':'+pad2(now.getMinutes())+':'+pad2(now.getSeconds())+' · ichkarida '+insideN;
+    imbEvents=(d.events||[]).slice().reverse();
+    renderImbDav();renderImbEv();
+    imbLastOk=Date.now();
+    const insideN=(d.inside!=null)?d.inside:rows.filter(r=>r.at_work).length;
+    const now=new Date();
+    setImbStatus('Yangilandi '+pad2(now.getHours())+':'+pad2(now.getMinutes())+':'+pad2(now.getSeconds())+' · ichkarida '+insideN,false);
+  }catch(e){
+    const secs=imbLastOk?Math.round((Date.now()-imbLastOk)/1000):0;
+    const reason=(e&&e.name==='AbortError')?'javob kechikdi':(e&&e.message||e);
+    setImbStatus(imbLastOk?("⚠ Yangilab bo'lmadi — "+secs+"s oldingi ma'lumot ("+reason+")"):("⚠ Yuklab bo'lmadi: "+reason),true);
   }finally{imbBusy=false;}
 }
 function renderImbDav(){
