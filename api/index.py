@@ -152,18 +152,38 @@ def _body_hikvision(scan):
     }
 
 
+def _is_hikvision(url):
+    return "/attendance/hikvision" in url
+
+
 def _body_for_url(url, scan):
-    if "/attendance/hikvision" in url:
+    if _is_hikvision(url):
         return _body_hikvision(scan)
     return _body_qr_scan(scan)
 
 
+def _post_scan(client, url, scan, timeout=8):
+    payload = _body_for_url(url, scan)
+    if _is_hikvision(url):
+        return client.post(
+            url,
+            data={"event_log": json.dumps(payload, ensure_ascii=False)},
+            timeout=timeout,
+        )
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    return client.post(
+        url,
+        content=body,
+        headers={"Content-Type": "application/json; charset=utf-8"},
+        timeout=timeout,
+    )
+
+
 def forward_scan(scan, urls):
     for url in urls:
-        body = json.dumps(_body_for_url(url, scan), ensure_ascii=False).encode("utf-8")
         try:
             with httpx.Client(timeout=8) as c:
-                c.post(url, content=body, headers={"Content-Type": "application/json; charset=utf-8"})
+                _post_scan(c, url, scan)
         except Exception:
             pass
 
@@ -308,10 +328,9 @@ async def test_url(request: Request):
         return {"ok": False, "error": "URL bo'sh"}
     test_scan = {"code": "TEST-123", "device": "cloud-test",
                  "source": "cloud-test", "status": "received", "scanned_at": "test"}
-    body = json.dumps(_body_for_url(url, test_scan), ensure_ascii=False).encode("utf-8")
     try:
         with httpx.Client(timeout=10) as c:
-            r = c.post(url, content=body, headers={"Content-Type": "application/json"})
+            r = _post_scan(c, url, test_scan, timeout=10)
         return {"ok": True, "status": r.status_code}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
