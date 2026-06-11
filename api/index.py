@@ -599,7 +599,10 @@ function urlRow(val){
     const url=div.querySelector('input').value.trim(),dot=div.querySelector('.dot'),btn=div.querySelector('[data-act=test]');
     dot.className='dot';btn.textContent='...';
     const r=await fetch('/api/v1/test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url})}).then(r=>r.json());
-    btn.textContent='Tekshirish';dot.className='dot '+(r.ok?'ok':'err');toast(r.ok?('OK — HTTP '+r.status):('Xato: '+r.error));
+    btn.textContent='Tekshirish';
+    const good=r.ok && r.status>=200 && r.status<400;
+    dot.className='dot '+(good?'ok':'err');
+    toast(good?('OK — HTTP '+r.status):(r.ok?('Server xatosi — HTTP '+r.status):('Xato: '+r.error)));
   };
   return div;
 }
