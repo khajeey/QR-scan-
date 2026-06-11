@@ -300,6 +300,52 @@ def imb_attendance(page: int = 1, page_size: int = 50):
         return _err(502, "IMB o'qish xatosi: " + str(exc))
 
 
+def _imb_at_work_users():
+    url = IMB_BASE + "/api/v1/attendance/at-work-users/"
+    with httpx.Client(timeout=15) as c:
+        r = c.get(url, headers={"Accept": "application/json"})
+    r.raise_for_status()
+    data = r.json()
+    return data if isinstance(data, list) else []
+
+
+@app.get("/api/v1/imb/sync")
+def imb_sync():
+    try:
+        users = _imb_at_work_users()
+    except httpx.HTTPError as exc:
+        return _err(502, "IMB at-work o'qish xatosi: " + str(exc))
+    cur, names = {}, {}
+    for u in users:
+        uid = str(u.get("id"))
+        cur[uid] = bool(u.get("at_work"))
+        names[uid] = u.get("full_name") or ("ID " + uid)
+    if not _configured():
+        return {"stored": False, "users": users, "events": [], "new": 0}
+    snap = db_get_setting("imb_aw_snap", None)
+    events = db_get_setting("imb_events", [])
+    if not isinstance(events, list):
+        events = []
+    now = datetime.now(timezone.utc).isoformat()
+    new_events = []
+    if isinstance(snap, dict):
+        for uid, val in cur.items():
+            prev = snap.get(uid)
+            if prev is None or val == prev:
+                continue
+            new_events.append({"t": now, "name": names.get(uid), "type": "in" if val else "out", "uid": uid})
+    if new_events:
+        events = (events + new_events)[-2000:]
+    if new_events or not isinstance(snap, dict):
+        try:
+            db_set_setting("imb_aw_snap", cur)
+            if new_events:
+                db_set_setting("imb_events", events)
+        except httpx.HTTPError:
+            pass
+    return {"stored": True, "users": users, "events": events, "new": len(new_events)}
+
+
 @app.get("/", response_class=HTMLResponse)
 def dashboard():
     return INDEX_HTML
@@ -409,14 +455,14 @@ INDEX_HTML = r'''<!DOCTYPE html>
 
     <div id="imb-view-dav">
       <table>
-        <thead><tr><th style="width:55px">#</th><th>Xodim</th><th style="width:175px">Kirgan</th><th style="width:175px">Chiqgan</th><th style="width:120px">Davomiylik</th><th style="width:150px">Holat</th></tr></thead>
+        <thead><tr><th style="width:55px">#</th><th>Xodim</th><th style="width:185px">Bugun birinchi kirgan</th><th style="width:130px">Davomiylik</th><th style="width:170px">Holat (hozir)</th></tr></thead>
         <tbody id="imb-rows"></tbody>
       </table>
       <div id="imb-empty" class="empty" style="display:none">Ma'lumot yo'q.</div>
     </div>
 
     <div id="imb-view-tarix" style="display:none">
-      <p class="desc" style="color:var(--muted);font-size:13px;margin:0 0 12px">Har bitta face-id / barmoq izi skani alohida qator. Bir odam necha marta kirib-chiqsa, hammasi ko'rinadi (oxirgi chiqish bilan almashtirilmaydi).</p>
+      <p class="desc" style="color:var(--muted);font-size:13px;margin:0 0 12px">Har bir kirish/chiqish o'zgarishi yoziladi (panel ochiq turganda har daqiqa tekshiriladi). Bir odam necha marta kirib-chiqsa, hammasi alohida qator bo'lib qoladi — oxirgisi bilan almashtirilmaydi. Vaqt — o'zgarish aniqlangan moment (±1 daqiqa).</p>
       <table>
         <thead><tr><th style="width:55px">#</th><th style="width:200px">Vaqt</th><th>Xodim</th><th style="width:170px">Hodisa</th></tr></thead>
         <tbody id="imb-ev-rows"></tbody>
@@ -503,6 +549,9 @@ let imbBusy=false;
 async function loadImb(){
   if(imbBusy)return;imbBusy=true;
   try{
+    let sync={users:[],events:[]};
+    try{sync=await api('/api/v1/imb/sync');}catch(e){}
+    const users=sync.users||[];
     let page=1,total=1;const sessions=[];
     do{
       let d;
@@ -511,37 +560,37 @@ async function loadImb(){
       (d.results||[]).forEach(r=>sessions.push(r));
       total=d.total_pages||1;page++;
     }while(page<=total && page<=20);
-    sessions.sort((a,b)=>String(b.entry_time||'').localeCompare(String(a.entry_time||'')));
+    const byId={};
+    sessions.forEach(r=>{const u=r.user||{};byId[String(u.id)]=r;});
 
-    const tb=$('#imb-rows');tb.innerHTML='';$('#imb-empty').style.display=sessions.length?'none':'';
-    sessions.forEach((r,i)=>{
-      const u=r.user||{};const name=esc(((u.first_name||'')+' '+(u.last_name||'')).trim()||('ID '+(u.id||'')));
-      const ex=imbExit(r.entry_time,r.duration);
-      const exCell=ex?fmtD(ex):'<span class="muted">—</span>';
-      const status=ex?'<span class="pill ok">Chiqib ketgan</span>':'<span class="pill received">🟢 Ichkarida</span>';
+    const rows=users.map(u=>{
+      const s=byId[String(u.id)]||{};
+      return {name:u.full_name||('ID '+u.id),at_work:!!u.at_work,entry:s.entry_time||'',dur:s.duration||''};
+    });
+    rows.sort((a,b)=>(b.at_work-a.at_work)||String(b.entry||'').localeCompare(String(a.entry||'')));
+    const tb=$('#imb-rows');tb.innerHTML='';$('#imb-empty').style.display=rows.length?'none':'';
+    let insideN=0;
+    rows.forEach((r,i)=>{
+      if(r.at_work)insideN++;
+      const status=r.at_work?'<span class="pill in">🟢 Ichkarida</span>':'<span class="pill ok">Tashqarida</span>';
+      const entry=r.entry?fmtImb(r.entry):'<span class="muted">—</span>';
       const tr=document.createElement('tr');
-      tr.innerHTML=`<td class="muted">${i+1}</td><td>${name}</td><td>${fmtImb(r.entry_time)}</td><td>${exCell}</td><td class="muted">${esc(r.duration||'')}</td><td>${status}</td>`;
+      tr.innerHTML=`<td class="muted">${i+1}</td><td>${esc(r.name)}</td><td>${entry}</td><td class="muted">${esc(r.dur||'')}</td><td>${status}</td>`;
       tb.appendChild(tr);
     });
 
-    const events=[];
-    sessions.forEach(r=>{
-      const u=r.user||{};const name=((u.first_name||'')+' '+(u.last_name||'')).trim()||('ID '+(u.id||''));
-      const en=parseImb(r.entry_time);
-      if(en)events.push({t:en,name:name,type:'in'});
-      const ex=imbExit(r.entry_time,r.duration);
-      if(ex)events.push({t:ex,name:name,type:'out'});
-    });
-    events.sort((a,b)=>b.t-a.t);
+    const events=(sync.events||[]).slice().reverse();
     const eb=$('#imb-ev-rows');eb.innerHTML='';$('#imb-ev-empty').style.display=events.length?'none':'';
     events.forEach((e,i)=>{
       const badge=e.type==='in'?'<span class="pill in">🟢 KIRDI</span>':'<span class="pill warn">🔴 CHIQDI</span>';
+      const d=new Date(e.t);
       const tr=document.createElement('tr');
-      tr.innerHTML=`<td class="muted">${i+1}</td><td>${fmtD(e.t)}</td><td>${esc(e.name)}</td><td>${badge}</td>`;
+      tr.innerHTML=`<td class="muted">${i+1}</td><td>${isNaN(d)?esc(e.t):fmtD(d)}</td><td>${esc(e.name)}</td><td>${badge}</td>`;
       eb.appendChild(tr);
     });
-    $('#imb-ev-pginfo').textContent=`Jami ${events.length} ta o'tish · ${sessions.length} sessiya`;
-    const now=new Date();$('#imb-updated').textContent='Yangilandi '+pad2(now.getHours())+':'+pad2(now.getMinutes())+':'+pad2(now.getSeconds());
+    $('#imb-ev-pginfo').textContent=`Jami ${events.length} ta yozilgan o'tish`;
+    if(events.length===0)$('#imb-ev-empty').textContent="Hozircha yozilgan o'tish yo'q — birinchi o'zgarish (kirish/chiqish) ro'y berganda paydo bo'ladi.";
+    const now=new Date();$('#imb-updated').textContent='Yangilandi '+pad2(now.getHours())+':'+pad2(now.getMinutes())+':'+pad2(now.getSeconds())+' · ichkarida '+insideN;
   }finally{imbBusy=false;}
 }
 $('#imb-refresh').onclick=()=>loadImb();
