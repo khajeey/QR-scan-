@@ -134,22 +134,27 @@ def _body_qr_scan(scan):
 
 def _body_hikvision(scan):
     status = scan.get("status") or "received"
-    if status in ("checkIn", "checkOut"):
-        attendance = status
-    else:
-        attendance = "checkIn"
-    return {
-        "AccessControllerEvent": {
-            "employeeNoString": str(scan.get("code") or ""),
-            "name": str(scan.get("name") or ""),
-            "attendanceStatus": attendance,
-            "deviceName": str(scan.get("device") or ""),
-        },
-        "ipAddress": str(scan.get("ip_address") or ""),
-        "macAddress": str(scan.get("mac_address") or ""),
+    attendance = status if status in ("checkIn", "checkOut") else "checkIn"
+
+    event = {"attendanceStatus": attendance}
+    if code := str(scan.get("code") or ""):
+        event["employeeNoString"] = code
+    if name := str(scan.get("name") or ""):
+        event["name"] = name
+    if device := str(scan.get("device") or ""):
+        event["deviceName"] = device
+
+    body = {
+        "AccessControllerEvent": event,
         "dateTime": scan.get("scanned_at") or scan.get("created_at") or "",
-        "deviceID": str(scan.get("source") or scan.get("device") or ""),
     }
+    if ip := str(scan.get("ip_address") or ""):
+        body["ipAddress"] = ip
+    if mac := str(scan.get("mac_address") or ""):
+        body["macAddress"] = mac
+    if source := str(scan.get("source") or scan.get("device") or ""):
+        body["deviceID"] = source
+    return body
 
 
 def _is_hikvision(url):
