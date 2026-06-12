@@ -208,12 +208,18 @@ def _post_scan(client, url, scan, timeout=8):
 
 
 def forward_scan(scan, urls):
+    out = []
     for url in urls:
+        rec = {"url": url, "ok": False, "status": None, "error": None}
         try:
-            with httpx.Client(timeout=8) as c:
-                _post_scan(c, url, scan)
-        except Exception:
-            pass
+            with httpx.Client(timeout=6) as c:
+                r = _post_scan(c, url, scan, timeout=6)
+            rec["status"] = r.status_code
+            rec["ok"] = 200 <= r.status_code < 400
+        except Exception as exc:
+            rec["error"] = str(exc)[:200]
+        out.append(rec)
+    return out
 
 
 @app.get("/health")
@@ -412,7 +418,7 @@ def _diff_events(prev_snap, cur, names, now):
 
 
 @app.get("/api/v1/imb/sync")
-def imb_sync(src: str = "unknown", window: int = 7, gap: int = 3):
+def imb_sync(src: str = "unknown", window: int = 20, gap: int = 5):
     try:
         users = _imb_at_work_users()
     except httpx.HTTPError as exc:
@@ -446,11 +452,6 @@ def imb_sync(src: str = "unknown", window: int = 7, gap: int = 3):
     now = datetime.now(timezone.utc).isoformat()
     if new_events:
         events = (events + new_events)[-2000:]
-        fwd = db_get_setting("forward_urls", [])
-        urls = [u for u in fwd if isinstance(u, str) and u.strip()] if isinstance(fwd, list) else []
-        if urls:
-            for ev in new_events:
-                forward_scan(_imb_event_to_scan(ev), urls)
     if new_events or not isinstance(snap, dict):
         try:
             db_set_setting("imb_aw_snap", running)
@@ -462,7 +463,18 @@ def imb_sync(src: str = "unknown", window: int = 7, gap: int = 3):
         db_set_setting("imb_last_sync", {"t": now, "src": src})
     except httpx.HTTPError:
         pass
-    return {"stored": True, "users": users, "events": events, "new": len(new_events), "src": src, "samples": samples}
+    forwarded = None
+    if new_events:
+        fwd = db_get_setting("forward_urls", [])
+        urls = [u for u in fwd if isinstance(u, str) and u.strip()] if isinstance(fwd, list) else []
+        if urls:
+            for ev in new_events:
+                forwarded = forward_scan(_imb_event_to_scan(ev), urls)
+            try:
+                db_set_setting("imb_last_forward", {"t": now, "n": len(new_events), "results": forwarded})
+            except httpx.HTTPError:
+                pass
+    return {"stored": True, "users": users, "events": events, "new": len(new_events), "src": src, "samples": samples, "forwarded": forwarded}
 
 
 def _imb_daily_sessions(max_pages=10):
@@ -509,7 +521,8 @@ def imb_state():
     if not isinstance(events, list):
         events = []
     last_sync = db_get_setting("imb_last_sync", None) if _configured() else None
-    return {"rows": rows, "events": events, "inside": sum(1 for r in rows if r["at_work"]), "last_sync": last_sync}
+    last_forward = db_get_setting("imb_last_forward", None) if _configured() else None
+    return {"rows": rows, "events": events, "inside": sum(1 for r in rows if r["at_work"]), "last_sync": last_sync, "last_forward": last_forward}
 
 
 @app.get("/", response_class=HTMLResponse)
