@@ -412,7 +412,7 @@ def _diff_events(prev_snap, cur, names, now):
 
 
 @app.get("/api/v1/imb/sync")
-def imb_sync(src: str = "unknown", window: int = 40, gap: int = 10):
+def imb_sync(src: str = "unknown", window: int = 7, gap: int = 3):
     try:
         users = _imb_at_work_users()
     except httpx.HTTPError as exc:
