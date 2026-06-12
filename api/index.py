@@ -4,7 +4,7 @@ import json
 import os
 import time
 from datetime import datetime, timedelta, timezone
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote
 
 import httpx
 from fastapi import FastAPI, Query, Request
@@ -525,6 +525,75 @@ def imb_state():
     return {"rows": rows, "events": events, "inside": sum(1 for r in rows if r["at_work"]), "last_sync": last_sync, "last_forward": last_forward}
 
 
+def _sink_add(request, raw_text):
+    ct = request.headers.get("content-type", "")
+    parsed = None
+    if "form-urlencoded" in ct:
+        q = parse_qs(raw_text)
+        if "event_log" in q:
+            try:
+                parsed = json.loads(q["event_log"][0])
+            except Exception:
+                parsed = q["event_log"][0]
+        else:
+            parsed = {k: (v[0] if len(v) == 1 else v) for k, v in q.items()}
+    elif "json" in ct:
+        try:
+            parsed = json.loads(raw_text)
+        except Exception:
+            parsed = None
+    entry = {
+        "t": datetime.now(timezone.utc).isoformat(),
+        "ip": request.headers.get("x-forwarded-for", "") or (request.client.host if request.client else ""),
+        "ct": ct,
+        "path": request.url.path,
+        "qs": request.url.query,
+        "raw": raw_text[:4000],
+        "parsed": parsed,
+    }
+    if _configured():
+        log = db_get_setting("sink_log", [])
+        if not isinstance(log, list):
+            log = []
+        log = (log + [entry])[-100:]
+        try:
+            db_set_setting("sink_log", log)
+        except httpx.HTTPError:
+            pass
+    return entry
+
+
+@app.post("/api/v1/sink")
+@app.post("/api/v1/sink/{rest:path}")
+async def sink_post(request: Request, rest: str = ""):
+    raw = await request.body()
+    _sink_add(request, raw.decode("utf-8", "replace"))
+    return {"success": True, "ok": True}
+
+
+@app.get("/api/v1/sink")
+def sink_json():
+    log = db_get_setting("sink_log", []) if _configured() else []
+    if not isinstance(log, list):
+        log = []
+    return {"count": len(log), "items": log}
+
+
+@app.get("/api/v1/sink-clear")
+def sink_clear():
+    if _configured():
+        try:
+            db_set_setting("sink_log", [])
+        except httpx.HTTPError:
+            pass
+    return {"cleared": True}
+
+
+@app.get("/sink", response_class=HTMLResponse)
+def sink_view():
+    return SINK_HTML
+
+
 @app.get("/", response_class=HTMLResponse)
 def dashboard():
     return INDEX_HTML
@@ -813,3 +882,49 @@ loadImb();
 </script>
 </body>
 </html>'''
+
+
+SINK_HTML = r'''<!DOCTYPE html>
+<html lang="uz"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sink — kelgan data</title>
+<style>
+:root{--bg:#0f1419;--panel:#171e26;--panel2:#1d2630;--line:#2a3744;--txt:#e6edf3;--muted:#8b9aa8;--accent:#3ea6ff}
+*{box-sizing:border-box}body{margin:0;font-family:system-ui,"Segoe UI",sans-serif;background:var(--bg);color:var(--txt);font-size:14px}
+header{display:flex;align-items:center;gap:14px;padding:14px 20px;border-bottom:1px solid var(--line);background:var(--panel);flex-wrap:wrap}
+h1{font-size:16px;margin:0}.muted{color:var(--muted)}.spacer{flex:1}
+button{background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:8px;padding:8px 12px;cursor:pointer}
+button:hover{border-color:var(--accent)}
+label.chk{display:flex;align-items:center;gap:6px;color:var(--muted);cursor:pointer;user-select:none}
+main{padding:18px;max-width:980px;margin:0 auto}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px;margin-bottom:12px}
+.top{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px}
+.t{color:var(--accent);font-weight:600}
+.tag{font-size:12px;background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:2px 8px;color:var(--muted)}
+pre{margin:0;white-space:pre-wrap;word-break:break-word;font-family:Consolas,monospace;font-size:13px;background:var(--panel2);border-radius:8px;padding:10px;border:1px solid var(--line)}
+.empty{text-align:center;color:var(--muted);padding:50px}
+</style></head><body>
+<header><h1>Sink — kelgan data</h1><span class="muted" id="cnt"></span><div class="spacer"></div>
+<label class="chk"><input type="checkbox" id="auto" checked> Avto (3s)</label>
+<button onclick="load()">Yangilash</button><button onclick="clr()">Tozalash</button></header>
+<main><div id="list"></div><div class="empty" id="empty">Hali hech narsa kelmadi. Bu URL'ni forward manzil sifatida qo'shing va kuting.</div></main>
+<script>
+const $=s=>document.querySelector(s);
+function esc(s){return (s==null?'':String(s)).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+function fmt(t){const d=new Date(t);return isNaN(d)?esc(t):d.toLocaleString('uz');}
+async function load(){
+  let d; try{d=await fetch('/api/v1/sink',{cache:'no-store'}).then(r=>r.json());}catch(e){return;}
+  const items=(d.items||[]).slice().reverse();
+  $('#cnt').textContent=d.count?('jami '+d.count+' ta'):'';
+  $('#empty').style.display=items.length?'none':'';
+  $('#list').innerHTML=items.map(it=>{
+    const body=it.parsed!=null?JSON.stringify(it.parsed,null,2):(it.raw||'');
+    return '<div class="card"><div class="top"><span class="t">'+fmt(it.t)+'</span>'+
+      '<span class="tag">'+esc(it.ct||'?')+'</span><span class="tag">'+esc(it.path||'')+'</span>'+
+      (it.ip?'<span class="tag">ip '+esc(it.ip)+'</span>':'')+'</div><pre>'+esc(body)+'</pre></div>';
+  }).join('');
+}
+async function clr(){if(confirm('Hammasini tozalaymi?')){await fetch('/api/v1/sink-clear');load();}}
+setInterval(function(){if($('#auto').checked)load();},3000);
+load();
+</script></body></html>'''
