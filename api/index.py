@@ -2,7 +2,7 @@ import csv
 import io
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
 
 import httpx
@@ -13,6 +13,7 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
 INGEST_TOKEN = os.environ.get("INGEST_TOKEN", "")
 IMB_BASE = os.environ.get("IMB_BASE", "https://imb.imbtruck.uz").rstrip("/")
+TASHKENT = timezone(timedelta(hours=5))
 
 REST = SUPABASE_URL + "/rest/v1"
 HEADERS = {
@@ -155,6 +156,27 @@ def _body_hikvision(scan):
     if source := str(scan.get("source") or scan.get("device") or ""):
         body["deviceID"] = source
     return body
+
+
+def _to_local_iso(iso):
+    try:
+        dt = datetime.fromisoformat(str(iso))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(TASHKENT).isoformat()
+    except Exception:
+        return iso
+
+
+def _imb_event_to_scan(ev):
+    return {
+        "code": ev.get("uid"),
+        "name": ev.get("name"),
+        "status": "checkIn" if ev.get("type") == "in" else "checkOut",
+        "scanned_at": _to_local_iso(ev.get("t")),
+        "source": "imb",
+        "device": "imb",
+    }
 
 
 def _is_hikvision(url):
@@ -392,6 +414,11 @@ def imb_sync(src: str = "unknown"):
             new_events.append({"t": now, "name": names.get(uid), "type": "in" if val else "out", "uid": uid})
     if new_events:
         events = (events + new_events)[-2000:]
+        fwd = db_get_setting("forward_urls", [])
+        urls = [u for u in fwd if isinstance(u, str) and u.strip()] if isinstance(fwd, list) else []
+        if urls:
+            for ev in new_events:
+                forward_scan(_imb_event_to_scan(ev), urls)
     if new_events or not isinstance(snap, dict):
         try:
             db_set_setting("imb_aw_snap", cur)
