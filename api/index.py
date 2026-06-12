@@ -409,7 +409,9 @@ def imb_sync(src: str = "unknown"):
     if isinstance(snap, dict):
         for uid, val in cur.items():
             prev = snap.get(uid)
-            if prev is None or val == prev:
+            if val == prev:
+                continue
+            if prev is None and not val:
                 continue
             new_events.append({"t": now, "name": names.get(uid), "type": "in" if val else "out", "uid": uid})
     if new_events:
