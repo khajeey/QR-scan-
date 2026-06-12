@@ -2,6 +2,7 @@ import csv
 import io
 import json
 import os
+import time
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
 
@@ -387,33 +388,62 @@ def _imb_at_work_users():
     return data if isinstance(data, list) else []
 
 
-@app.get("/api/v1/imb/sync")
-def imb_sync(src: str = "unknown"):
-    try:
-        users = _imb_at_work_users()
-    except httpx.HTTPError as exc:
-        return _err(502, "IMB at-work o'qish xatosi: " + str(exc))
+def _scan_users(users):
     cur, names = {}, {}
     for u in users:
         uid = str(u.get("id"))
         cur[uid] = bool(u.get("at_work"))
         names[uid] = u.get("full_name") or ("ID " + uid)
+    return cur, names
+
+
+def _diff_events(prev_snap, cur, names, now):
+    out = []
+    if not isinstance(prev_snap, dict):
+        return out
+    for uid, val in cur.items():
+        prev = prev_snap.get(uid)
+        if val == prev:
+            continue
+        if prev is None and not val:
+            continue
+        out.append({"t": now, "name": names.get(uid), "type": "in" if val else "out", "uid": uid})
+    return out
+
+
+@app.get("/api/v1/imb/sync")
+def imb_sync(src: str = "unknown", window: int = 40, gap: int = 10):
+    try:
+        users = _imb_at_work_users()
+    except httpx.HTTPError as exc:
+        return _err(502, "IMB at-work o'qish xatosi: " + str(exc))
+    cur, names = _scan_users(users)
     if not _configured():
         return {"stored": False, "users": users, "events": [], "new": 0}
     snap = db_get_setting("imb_aw_snap", None)
     events = db_get_setting("imb_events", [])
     if not isinstance(events, list):
         events = []
-    now = datetime.now(timezone.utc).isoformat()
+    window = max(0, min(window, 48))
+    gap = max(3, min(gap, 30))
+    running = snap
     new_events = []
-    if isinstance(snap, dict):
-        for uid, val in cur.items():
-            prev = snap.get(uid)
-            if val == prev:
-                continue
-            if prev is None and not val:
-                continue
-            new_events.append({"t": now, "name": names.get(uid), "type": "in" if val else "out", "uid": uid})
+    samples = 0
+    deadline = time.monotonic() + window
+    while True:
+        now = datetime.now(timezone.utc).isoformat()
+        new_events.extend(_diff_events(running, cur, names, now))
+        running = cur
+        samples += 1
+        if time.monotonic() + gap >= deadline:
+            break
+        time.sleep(gap)
+        try:
+            users = _imb_at_work_users()
+        except httpx.HTTPError:
+            break
+        cur, names = _scan_users(users)
+    now = datetime.now(timezone.utc).isoformat()
     if new_events:
         events = (events + new_events)[-2000:]
         fwd = db_get_setting("forward_urls", [])
@@ -423,7 +453,7 @@ def imb_sync(src: str = "unknown"):
                 forward_scan(_imb_event_to_scan(ev), urls)
     if new_events or not isinstance(snap, dict):
         try:
-            db_set_setting("imb_aw_snap", cur)
+            db_set_setting("imb_aw_snap", running)
             if new_events:
                 db_set_setting("imb_events", events)
         except httpx.HTTPError:
@@ -432,7 +462,7 @@ def imb_sync(src: str = "unknown"):
         db_set_setting("imb_last_sync", {"t": now, "src": src})
     except httpx.HTTPError:
         pass
-    return {"stored": True, "users": users, "events": events, "new": len(new_events), "src": src}
+    return {"stored": True, "users": users, "events": events, "new": len(new_events), "src": src, "samples": samples}
 
 
 def _imb_daily_sessions(max_pages=10):
