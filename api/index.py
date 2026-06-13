@@ -438,43 +438,60 @@ def _extract_event(raw_text):
         return None
 
 
-def _relay_to_imb(raw_bytes, ct):
+def _relay_device(raw_bytes, ct):
+    targets = db_get_setting("relay_urls", None)
+    if not isinstance(targets, list) or not targets:
+        targets = [IMB_QWERTY_URL]
     headers = {"Content-Type": ct} if ct else {}
-    last = ""
-    for _ in range(2):
-        try:
-            with httpx.Client(timeout=8) as c:
-                r = c.post(IMB_QWERTY_URL, content=raw_bytes, headers=headers)
-            return {"ok": r.status_code < 400, "status": r.status_code}
-        except httpx.HTTPError as exc:
-            last = str(exc)
-    return {"ok": False, "status": 0, "error": last}
+    out = []
+    for url in targets:
+        rec = {"url": url, "ok": False, "status": 0, "error": None}
+        for _ in range(2):
+            try:
+                with httpx.Client(timeout=8) as c:
+                    r = c.post(url, content=raw_bytes, headers=headers)
+                rec["status"] = r.status_code
+                rec["ok"] = r.status_code < 400
+                break
+            except httpx.HTTPError as exc:
+                rec["error"] = str(exc)[:200]
+        out.append(rec)
+    return out
 
 
-@app.post("/api/v1/attendance/qwerty/")
 @app.post("/api/v1/attendance/qwerty")
-async def device_qwerty(request: Request):
+@app.post("/api/v1/attendance/qwerty/")
+@app.post("/api/v1/attendance/qwerty/{rest:path}")
+async def device_qwerty(request: Request, rest: str = ""):
     raw = await request.body()
     ct = request.headers.get("content-type", "")
-    relay = _relay_to_imb(raw, ct)
+    relay = _relay_device(raw, ct)
+    low = (rest or "").lower()
+    direction = "in" if "in" in low else ("out" if "out" in low else None)
     txt = raw.decode("utf-8", "replace")
     name = emp = ""
+    saved = False
     try:
         ev = _extract_event(txt)
         ace = (ev or {}).get("AccessControllerEvent") or {}
         emp = str(ace.get("employeeNoString") or ace.get("employeeNo") or "").strip()
         name = str(ace.get("name") or "").strip()
         dt = str((ev or {}).get("dateTime") or "").strip()
-        st = str(ace.get("attendanceStatus") or "").strip()
-        dev_name = str(ace.get("deviceName") or "").strip()
-        if (name or emp) and _configured():
-            dev = (("tabel:" + emp) if emp else "") + ((" | " + dev_name) if dev_name else "")
-            row = {"code": (name or emp), "device": dev, "status": (st or "ok"),
-                   "source": "device", "scanned_at": _s(dt)}
-            try:
-                db_insert([row])
-            except httpx.HTTPError:
-                pass
+        serialno = str(ace.get("serialNo") or (ev or {}).get("serialNo") or "").strip()
+        if direction and (emp or name) and _configured():
+            t = dt if dt else datetime.now(TASHKENT).isoformat()
+            serial = (direction + "-" + serialno) if serialno else (direction + "-" + (emp or name) + "-" + t)
+            existing = db_get_setting("device_events", [])
+            if not isinstance(existing, list):
+                existing = []
+            if not any(str(e.get("serial")) == serial for e in existing):
+                existing.append({"t": t, "dir": direction, "uid": emp, "name": name, "serial": serial})
+                existing = sorted(existing, key=lambda e: (e.get("t") or ""))[-8000:]
+                try:
+                    db_set_setting("device_events", existing)
+                    saved = True
+                except httpx.HTTPError:
+                    pass
     except Exception:
         pass
     if _configured():
@@ -482,12 +499,13 @@ async def device_qwerty(request: Request):
             log = db_get_setting("device_push_log", [])
             if not isinstance(log, list):
                 log = []
-            log = (log + [{"t": datetime.now(timezone.utc).isoformat(), "ct": ct,
-                           "name": name, "emp": emp, "relay": relay, "raw": txt[:1500]}])[-40:]
+            log = (log + [{"t": datetime.now(timezone.utc).isoformat(), "ct": ct, "dir": direction,
+                           "name": name, "emp": emp, "saved": saved, "relay": relay,
+                           "raw": txt[:1500]}])[-40:]
             db_set_setting("device_push_log", log)
         except httpx.HTTPError:
             pass
-    return JSONResponse({"success": True, "relay": relay}, status_code=200)
+    return JSONResponse({"success": True}, status_code=200)
 
 
 @app.get("/api/v1/device/push-log")
