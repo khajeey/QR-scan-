@@ -29,8 +29,33 @@ Tag which PC a scan came from by adding `?source=NAME` to that PC's webhook URL,
    - **Project URL**            → `SUPABASE_URL`
    - **service_role** secret key → `SUPABASE_SERVICE_KEY`  (secret — server only, never in a browser)
 
-## 2) Vercel (hosting)
-**Option A — Vercel CLI (from this folder):**
+## 2) Hosting
+
+### Option A — Docker (har qanday serverda: VPS, Render, Railway, Fly.io)
+Ushbu papkada `Dockerfile`, `docker-compose.yml` va `.env.example` bor.
+
+```bash
+# 1) Env faylni tayyorlang
+cp .env.example .env          # SUPABASE_URL va SUPABASE_SERVICE_KEY ni to'ldiring
+
+# 2) Build + ishga tushirish (docker compose)
+docker compose up -d --build
+
+# Tekshirish:
+curl http://localhost:8000/health
+# Dashboard:  http://localhost:8000/
+```
+
+Yoki sof Docker bilan:
+```bash
+docker build -t qr-cloud .
+docker run -d --name qr-cloud -p 8000:8000 --env-file .env qr-cloud
+```
+
+Render / Railway / Fly.io kabi platformalarda: repoga push qiling, ular `Dockerfile` ni avtomatik aniqlaydi. Env o'zgaruvchilarni (`SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, ixtiyoriy `INGEST_TOKEN`) platforma panelidan kiriting. Port `$PORT` env'dan o'qiladi.
+
+### Option B — Vercel (hosting)
+**Vercel CLI (from this folder):**
 ```bash
 npm i -g vercel
 vercel            # first run: link/create project
@@ -41,7 +66,7 @@ vercel env add INGEST_TOKEN          # e.g. a long random string
 vercel --prod
 ```
 
-**Option B — GitHub:** push this folder to a repo → vercel.com → **Add New → Project → Import** →
+**GitHub orqali:** push this folder to a repo → vercel.com → **Add New → Project → Import** →
 add the same Environment Variables → **Deploy**.
 
 ## 3) Point the Windows app at it

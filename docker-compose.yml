@@ -1,0 +1,24 @@
+services:
+  qr-cloud:
+    build: .
+    image: qr-cloud:latest
+    container_name: qr-cloud
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      # Majburiy — Supabase
+      SUPABASE_URL: ${SUPABASE_URL}
+      SUPABASE_SERVICE_KEY: ${SUPABASE_SERVICE_KEY}
+      # Ixtiyoriy — POST'larni himoyalash uchun maxfiy token
+      INGEST_TOKEN: ${INGEST_TOKEN:-}
+      # Ixtiyoriy — IMB integratsiya manzillari
+      IMB_BASE: ${IMB_BASE:-https://imb.imbtruck.uz}
+      IMB_QWERTY_URL: ${IMB_QWERTY_URL:-http://imb.imbtruck.uz/attendance/qwerty/}
+      PORT: "8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; urllib.request.urlopen('http://127.0.0.1:8000/health'); sys.exit(0)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

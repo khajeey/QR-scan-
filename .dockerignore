@@ -1,0 +1,28 @@
+# Version control
+.git
+.github
+.gitignore
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+
+# Secrets / env
+.env
+.env.local
+.env.*
+
+# Vercel
+.vercel
+vercel.json
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Docs / dev
+README.md
