@@ -328,51 +328,93 @@ def stats():
     return {"total": total, "today": today_n}
 
 
+def _norm_name(s):
+    return " ".join(sorted(str(s or "").lower().split()))
+
+
 @app.get("/api/v1/davomat")
 def davomat(date: str = ""):
     if not _configured():
         return _err(503, "server not configured")
     if not date:
         date = (datetime.now(timezone.utc) + timedelta(hours=5)).strftime("%Y-%m-%d")
-    try:
-        rows, _ = db_select("", date, date, "", 5000, 0)
-    except httpx.HTTPError as exc:
-        return _err(502, "supabase query failed: " + str(exc))
     people = {}
-    for r in rows:
-        code = (r.get("code") or "").strip()
-        m = re.search(r"tabel:\s*(\d+)", r.get("device") or "")
-        tabel = m.group(1) if m else (code if code.isdigit() else "")
-        if not code and not tabel:
-            continue
-        key = ("t:" + tabel) if tabel else ("n:" + code.lower())
-        t = r.get("scanned_at") or r.get("created_at") or ""
+
+    def rec(key, name, t, ident, direction):
+        if not key or not t:
+            return
         p = people.get(key)
         if p is None:
-            people[key] = {"name": code, "tabel": tabel, "first": t, "last": t, "scans": 1}
-        else:
-            p["scans"] += 1
-            if t and (not p["first"] or t < p["first"]):
-                p["first"] = t
-            if t and t > (p["last"] or ""):
-                p["last"] = t
-            if tabel and not p["tabel"]:
-                p["tabel"] = tabel
-            cur = p["name"] or ""
-            if code and any(c.isalpha() for c in code) and not any(c.isalpha() for c in cur):
-                p["name"] = code
+            p = people[key] = {"name": name or "", "tabel": ident or "", "evs": []}
+        p["evs"].append((t, direction))
+        if name and any(c.isalpha() for c in name) and not any(c.isalpha() for c in (p["name"] or "")):
+            p["name"] = name
+        if ident and not p["tabel"]:
+            p["tabel"] = ident
+
+    dev = db_get_setting("device_events", [])
+    if not isinstance(dev, list):
+        dev = []
+    dev_n = 0
+    seen = set()
+    for e in dev:
+        t = str(e.get("t") or "")
+        if not t.startswith(date):
+            continue
+        dev_n += 1
+        uid = str(e.get("uid") or "")
+        nm = str(e.get("name") or "").strip()
+        key = ("u:" + uid) if uid else ("n:" + _norm_name(nm))
+        rec(key, nm, t, uid, e.get("dir"))
+        if nm:
+            seen.add(_norm_name(nm))
+
+    try:
+        rows, _ = db_select("", date, date, "", 5000, 0)
+    except httpx.HTTPError:
+        rows = []
+    scan_n = 0
+    for r in rows:
+        code = (r.get("code") or "").strip()
+        if not code or _norm_name(code) in seen:
+            continue
+        scan_n += 1
+        m = re.search(r"tabel:\s*(\d+)", r.get("device") or "")
+        tabel = m.group(1) if m else (code if code.isdigit() else "")
+        t = r.get("scanned_at") or r.get("created_at") or ""
+        rec("n:" + _norm_name(code), code, t, tabel, None)
+
     out = []
     for p in people.values():
-        f, l = str(p["first"] or ""), str(p["last"] or "")
-        has_exit = bool(l) and l != f
-        p["kelgan"] = f[11:16] if len(f) >= 16 else ""
-        p["kelgan_full"] = f[:19].replace("T", " ")
-        p["ketgan"] = (l[11:16] if len(l) >= 16 else "") if has_exit else ""
-        p["ketgan_full"] = l[:19].replace("T", " ") if has_exit else ""
-        p["status"] = "chiqdi" if has_exit else "ichkarida"
-        out.append(p)
-    out.sort(key=lambda x: x["first"] or "")
-    return {"date": date, "count": len(out), "total_scans": len(rows), "data": out}
+        evs = sorted(p["evs"], key=lambda x: x[0])
+        if not evs:
+            continue
+        first, last = evs[0][0], evs[-1][0]
+        last_dir, last_dir_t = None, ""
+        for t, d in reversed(evs):
+            if d in ("in", "out"):
+                last_dir, last_dir_t = d, t
+                break
+        if last_dir is not None:
+            inside = last_dir != "out"
+            exit_t = "" if inside else last_dir_t
+        else:
+            inside = last == first
+            exit_t = "" if inside else last
+        out.append({
+            "name": p["name"] or ("ID " + (p["tabel"] or "?")),
+            "tabel": p["tabel"] or "",
+            "kelgan": first[11:16] if len(first) >= 16 else "",
+            "kelgan_full": first[:19].replace("T", " "),
+            "ketgan": exit_t[11:16] if (exit_t and len(exit_t) >= 16) else "",
+            "ketgan_full": exit_t[:19].replace("T", " ") if exit_t else "",
+            "status": "ichkarida" if inside else "chiqdi",
+            "scans": len(evs),
+            "first": first,
+        })
+    out.sort(key=lambda x: x["first"])
+    return {"date": date, "count": len(out), "total_scans": dev_n + scan_n,
+            "data": out, "device_n": dev_n}
 
 
 def _extract_event(raw_text):
