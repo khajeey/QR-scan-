@@ -389,28 +389,22 @@ def davomat(date: str = ""):
         evs = sorted(p["evs"], key=lambda x: x[0])
         if not evs:
             continue
-        first, last = evs[0][0], evs[-1][0]
-        last_dir, last_dir_t = None, ""
-        for t, d in reversed(evs):
-            if d in ("in", "out"):
-                last_dir, last_dir_t = d, t
-                break
-        if last_dir is not None:
-            inside = last_dir != "out"
-            exit_t = "" if inside else last_dir_t
-        else:
-            inside = last == first
-            exit_t = "" if inside else last
+        ins = [t for t, d in evs if d != "out"]
+        outs = [t for t, d in evs if d == "out"]
+        last_dir = next((d for t, d in reversed(evs) if d in ("in", "out")), None)
+        inside = last_dir != "out"
+        arrive = ins[0] if ins else ""
+        exit_t = outs[-1] if (outs and not inside) else ""
         out.append({
             "name": p["name"] or ("ID " + (p["tabel"] or "?")),
             "tabel": p["tabel"] or "",
-            "kelgan": first[11:16] if len(first) >= 16 else "",
-            "kelgan_full": first[:19].replace("T", " "),
+            "kelgan": arrive[11:16] if len(arrive) >= 16 else "",
+            "kelgan_full": arrive[:19].replace("T", " ") if arrive else "",
             "ketgan": exit_t[11:16] if (exit_t and len(exit_t) >= 16) else "",
             "ketgan_full": exit_t[:19].replace("T", " ") if exit_t else "",
             "status": "ichkarida" if inside else "chiqdi",
             "scans": len(evs),
-            "first": first,
+            "first": arrive if arrive else ("~" + evs[0][0]),
         })
     out.sort(key=lambda x: x["first"])
     return {"date": date, "count": len(out), "total_scans": dev_n + scan_n,
