@@ -443,9 +443,17 @@ def imb_sync(src: str = "unknown", window: int = 20, gap: int = 5):
     deadline = time.monotonic() + window
     while True:
         now = datetime.now(timezone.utc).isoformat()
-        new_events.extend(_diff_events(running, cur, names, now))
+        batch = _diff_events(running, cur, names, now)
         running = cur
         samples += 1
+        if batch:
+            new_events.extend(batch)
+            events = (events + batch)[-2000:]
+            try:
+                db_set_setting("imb_aw_snap", running)
+                db_set_setting("imb_events", events)
+            except httpx.HTTPError:
+                pass
         if time.monotonic() + gap >= deadline:
             break
         time.sleep(gap)
@@ -455,13 +463,9 @@ def imb_sync(src: str = "unknown", window: int = 20, gap: int = 5):
             break
         cur, names = _scan_users(users)
     now = datetime.now(timezone.utc).isoformat()
-    if new_events:
-        events = (events + new_events)[-2000:]
-    if new_events or not isinstance(snap, dict):
+    if not new_events and not isinstance(snap, dict):
         try:
             db_set_setting("imb_aw_snap", running)
-            if new_events:
-                db_set_setting("imb_events", events)
         except httpx.HTTPError:
             pass
     try:
@@ -719,7 +723,7 @@ INDEX_HTML = r'''<!DOCTYPE html>
         <tbody id="imb-ev-rows"></tbody>
       </table></div>
       <div id="imb-ev-empty" class="empty" style="display:none">Ma'lumot yo'q.</div>
-      <div class="pager"><span id="imb-ev-pginfo"></span></div>
+      <div class="pager"><button class="btn" id="imb-ev-prev">‹ Oldingi</button><span id="imb-ev-pginfo"></span><button class="btn" id="imb-ev-next">Keyingi ›</button></div>
     </div>
   </section>
 
@@ -762,9 +766,10 @@ document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
   if(b.dataset.tab==='imb')loadImb();
 });
 
-function fmtD(d){return d.toLocaleString('uz',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'});}
+const TZ='Asia/Tashkent';
+function fmtD(d){return d.toLocaleString('uz',{timeZone:TZ,hour12:false,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'});}
 function pad2(n){return (n<10?'0':'')+n;}
-function parseImb(s){if(!s)return null;const d=new Date(String(s).replace(' ','T'));return isNaN(d)?null:d;}
+function parseImb(s){if(!s)return null;let t=String(s).trim().replace(' ','T');if(!/[zZ]|[+\-]\d\d:?\d\d$/.test(t))t+='+05:00';const d=new Date(t);return isNaN(d)?null:d;}
 function fmtImb(s){const d=parseImb(s);return d?fmtD(d):esc(s||'');}
 function durSecs(dur){const m=String(dur||'').match(/^(\d+):(\d{2}):(\d{2})$/);return m?(+m[1])*3600+(+m[2])*60+(+m[3]):0;}
 function imbExit(entry,dur){const sec=durSecs(dur);const d=parseImb(entry);if(!d||sec<=0)return null;return new Date(d.getTime()+sec*1000);}
@@ -795,8 +800,8 @@ async function loadImb(){
     renderImbDav();renderImbEv();
     imbLastOk=Date.now();
     const insideN=(d.inside!=null)?d.inside:rows.filter(r=>r.at_work).length;
-    const now=new Date();
-    setImbStatus('Yangilandi '+pad2(now.getHours())+':'+pad2(now.getMinutes())+':'+pad2(now.getSeconds())+' · ichkarida '+insideN,false);
+    const nowT=new Date().toLocaleTimeString('uz',{timeZone:TZ,hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'});
+    setImbStatus('Yangilandi '+nowT+' · ichkarida '+insideN,false);
     renderSync(d.last_sync);
   }catch(e){
     const secs=imbLastOk?Math.round((Date.now()-imbLastOk)/1000):0;
@@ -816,23 +821,33 @@ function renderImbDav(){
     tb.appendChild(tr);
   });
 }
+let imbEvPage=1;const EV_PAGE_SIZE=50;
 function renderImbEv(){
   const q=($('#imb-q').value||'').trim().toLowerCase();
   const events=q?imbEvents.filter(e=>String(e.name).toLowerCase().includes(q)):imbEvents;
-  const eb=$('#imb-ev-rows');eb.innerHTML='';$('#imb-ev-empty').style.display=events.length?'none':'';
-  events.forEach((e,i)=>{
+  const total=events.length;
+  const pages=Math.max(1,Math.ceil(total/EV_PAGE_SIZE));
+  if(imbEvPage>pages)imbEvPage=pages;if(imbEvPage<1)imbEvPage=1;
+  const start=(imbEvPage-1)*EV_PAGE_SIZE;
+  const pageEvents=events.slice(start,start+EV_PAGE_SIZE);
+  const eb=$('#imb-ev-rows');eb.innerHTML='';$('#imb-ev-empty').style.display=total?'none':'';
+  pageEvents.forEach((e,i)=>{
     const badge=e.type==='in'?'<span class="pill in">🟢 KIRDI</span>':'<span class="pill warn">🔴 CHIQDI</span>';
     const d=new Date(e.t);
     const tr=document.createElement('tr');
-    tr.innerHTML=`<td class="muted">${i+1}</td><td>${isNaN(d)?esc(e.t):fmtD(d)}</td><td>${esc(e.name)}</td><td>${badge}</td>`;
+    tr.innerHTML=`<td class="muted">${start+i+1}</td><td>${isNaN(d)?esc(e.t):fmtD(d)}</td><td>${esc(e.name)}</td><td>${badge}</td>`;
     eb.appendChild(tr);
   });
-  $('#imb-ev-pginfo').textContent=q?`${events.length} / ${imbEvents.length} ta o'tish`:`Jami ${imbEvents.length} ta yozilgan o'tish`;
+  const pv=$('#imb-ev-prev'),nx=$('#imb-ev-next');
+  if(pv&&nx){pv.disabled=imbEvPage<=1;nx.disabled=imbEvPage>=pages;pv.style.opacity=pv.disabled?'.4':'1';nx.style.opacity=nx.disabled?'.4':'1';}
+  $('#imb-ev-pginfo').textContent=total?`Sahifa ${imbEvPage}/${pages} · ${start+1}–${start+pageEvents.length} (jami ${total}${q?' / '+imbEvents.length:''} ta)`:'';
   if(imbEvents.length===0)$('#imb-ev-empty').textContent="Hozircha yozilgan o'tish yo'q — birinchi o'zgarish (kirish/chiqish) ro'y berganda paydo bo'ladi.";
   else if(events.length===0)$('#imb-ev-empty').textContent="Qidiruvga mos o'tish topilmadi.";
 }
+$('#imb-ev-prev').onclick=()=>{if(imbEvPage>1){imbEvPage--;renderImbEv();}};
+$('#imb-ev-next').onclick=()=>{imbEvPage++;renderImbEv();};
 $('#imb-refresh').onclick=()=>loadImb();
-$('#imb-q').oninput=()=>{renderImbDav();renderImbEv();};
+$('#imb-q').oninput=()=>{imbEvPage=1;renderImbDav();renderImbEv();};
 document.querySelectorAll('.subtab').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('.subtab').forEach(x=>x.classList.remove('active'));
   b.classList.add('active');
