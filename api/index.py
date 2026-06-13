@@ -2,6 +2,7 @@ import csv
 import io
 import json
 import os
+import re
 import time
 from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, quote
@@ -324,6 +325,45 @@ def stats():
     except httpx.HTTPError as exc:
         return _err(502, "supabase query failed: " + str(exc))
     return {"total": total, "today": today_n}
+
+
+@app.get("/api/v1/davomat")
+def davomat(date: str = ""):
+    if not _configured():
+        return _err(503, "server not configured")
+    if not date:
+        date = (datetime.now(timezone.utc) + timedelta(hours=5)).strftime("%Y-%m-%d")
+    try:
+        rows, _ = db_select("", date, date, "", 5000, 0)
+    except httpx.HTTPError as exc:
+        return _err(502, "supabase query failed: " + str(exc))
+    people = {}
+    for r in rows:
+        code = (r.get("code") or "").strip()
+        if not code:
+            continue
+        t = r.get("scanned_at") or r.get("created_at") or ""
+        m = re.search(r"tabel:\s*(\d+)", r.get("device") or "")
+        tabel = m.group(1) if m else ""
+        p = people.get(code)
+        if p is None:
+            people[code] = {"name": code, "tabel": tabel, "first": t, "last": t, "scans": 1}
+        else:
+            p["scans"] += 1
+            if t and (not p["first"] or t < p["first"]):
+                p["first"] = t
+            if t and t > (p["last"] or ""):
+                p["last"] = t
+            if tabel and not p["tabel"]:
+                p["tabel"] = tabel
+    out = []
+    for p in people.values():
+        f = str(p["first"] or "")
+        p["kelgan"] = f[11:16] if len(f) >= 16 else ""
+        p["kelgan_full"] = f[:19].replace("T", " ")
+        out.append(p)
+    out.sort(key=lambda x: x["first"] or "")
+    return {"date": date, "count": len(out), "total_scans": len(rows), "data": out}
 
 
 @app.get("/api/v1/config")
@@ -747,11 +787,27 @@ INDEX_HTML = r'''<!DOCTYPE html>
     </div>
 
     <div class="subtabs">
-      <button class="btn subtab active" data-sub="dav">Davomat</button>
+      <button class="btn subtab active" data-sub="keldi">Kelganlar</button>
+      <button class="btn subtab" data-sub="dav">Holat</button>
       <button class="btn subtab" data-sub="tarix">Tarix</button>
     </div>
 
-    <div id="imb-view-dav">
+    <div id="imb-view-keldi">
+      <div class="toolbar">
+        <label class="muted">Sana <input type="date" id="keldi-date" style="background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:8px;padding:7px 10px;color-scheme:dark"></label>
+        <span class="muted" id="keldi-cnt"></span>
+        <div class="grow"></div>
+        <button class="btn" id="keldi-csv">⬇ CSV</button>
+      </div>
+      <p class="desc" style="color:var(--muted);font-size:13px;margin:0 0 12px">Tanlangan kunda kim ishga kelgani va birinchi marta o'tgan vaqti (face-id / barmoq izi). Manba — bulut (laptopsiz). Bir kishi bir kunda bir necha marta o'tsa, eng birinchi vaqti ko'rsatiladi.</p>
+      <div class="tscroll"><table>
+        <thead><tr><th style="width:55px">#</th><th>Xodim</th><th style="width:110px">Tabel</th><th style="width:140px">Kelgan vaqt</th><th style="width:100px">Skanlar</th></tr></thead>
+        <tbody id="keldi-rows"></tbody>
+      </table></div>
+      <div id="keldi-empty" class="empty" style="display:none">Bu kunda hali hech kim kelmadi (yoki ma'lumot yo'q).</div>
+    </div>
+
+    <div id="imb-view-dav" style="display:none">
       <div class="tscroll"><table>
         <thead><tr><th style="width:55px">#</th><th>Xodim</th><th style="width:185px">Bugun birinchi kirgan</th><th style="width:130px">Davomiylik</th><th style="width:170px">Holat (hozir)</th></tr></thead>
         <tbody id="imb-rows"></tbody>
@@ -806,7 +862,7 @@ document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
   $('#tab-imb').style.display=b.dataset.tab==='imb'?'':'none';
   $('#tab-settings').style.display=b.dataset.tab==='settings'?'':'none';
   if(b.dataset.tab==='settings')loadConfig();
-  if(b.dataset.tab==='imb')loadImb();
+  if(b.dataset.tab==='imb'){loadImb();loadKeldi();}
 });
 
 const TZ='Asia/Tashkent';
@@ -901,15 +957,49 @@ function renderImbEv(){
 }
 $('#imb-ev-prev').onclick=()=>{if(imbEvPage>1){imbEvPage--;renderImbEv();}};
 $('#imb-ev-next').onclick=()=>{imbEvPage++;renderImbEv();};
-$('#imb-refresh').onclick=()=>loadImb();
-$('#imb-q').oninput=()=>{imbEvPage=1;renderImbDav();renderImbEv();};
+$('#imb-refresh').onclick=()=>{loadImb();loadKeldi();};
+$('#imb-q').oninput=()=>{imbEvPage=1;renderKeldi();renderImbDav();renderImbEv();};
+let keldiData=[];
+function keldiDate(){return $('#keldi-date').value || new Date().toLocaleDateString('en-CA',{timeZone:TZ});}
+function keldiFilter(){
+  const q=($('#imb-q').value||'').trim().toLowerCase();
+  return q?keldiData.filter(r=>String(r.name).toLowerCase().includes(q)||String(r.tabel||'').includes(q)):keldiData;
+}
+async function loadKeldi(){
+  if(!$('#keldi-date').value)$('#keldi-date').value=new Date().toLocaleDateString('en-CA',{timeZone:TZ});
+  try{
+    const d=await fetchJSON('/api/v1/davomat?date='+encodeURIComponent(keldiDate()),12000);
+    keldiData=d.data||[];
+    $('#keldi-cnt').textContent=keldiData.length+' kishi keldi'+(d.total_scans?(' · '+d.total_scans+' skan'):'');
+  }catch(e){$('#keldi-cnt').textContent="⚠ yuklab bo'lmadi";}
+  renderKeldi();
+}
+function renderKeldi(){
+  const rows=keldiFilter();
+  const tb=$('#keldi-rows');tb.innerHTML='';$('#keldi-empty').style.display=rows.length?'none':'';
+  rows.forEach((r,i)=>{
+    const tr=document.createElement('tr');
+    tr.innerHTML=`<td class="muted">${i+1}</td><td>${esc(r.name)}</td><td class="muted">${esc(r.tabel||'—')}</td><td><b>${esc(r.kelgan||'')}</b></td><td class="muted">${r.scans||1}</td>`;
+    tb.appendChild(tr);
+  });
+}
+$('#keldi-date').onchange=()=>loadKeldi();
+$('#keldi-csv').onclick=()=>{
+  const rows=keldiFilter();
+  let out='﻿#,Xodim,Tabel,Kelgan vaqt,Skanlar\n';
+  rows.forEach((r,i)=>{out+=[i+1,'"'+String(r.name).replace(/"/g,'""')+'"',r.tabel||'',r.kelgan_full||r.kelgan||'',r.scans||1].join(',')+'\n';});
+  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([out],{type:'text/csv'}));a.download='davomat-'+keldiDate()+'.csv';a.click();
+};
 document.querySelectorAll('.subtab').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('.subtab').forEach(x=>x.classList.remove('active'));
   b.classList.add('active');
-  $('#imb-view-dav').style.display=b.dataset.sub==='dav'?'':'none';
-  $('#imb-view-tarix').style.display=b.dataset.sub==='tarix'?'':'none';
+  const s=b.dataset.sub;
+  $('#imb-view-keldi').style.display=s==='keldi'?'':'none';
+  $('#imb-view-dav').style.display=s==='dav'?'':'none';
+  $('#imb-view-tarix').style.display=s==='tarix'?'':'none';
+  if(s==='keldi')loadKeldi();
 });
-setInterval(()=>{if($('#imb-auto').checked && $('#tab-imb').style.display!=='none'){loadImb();}},60000);
+setInterval(()=>{if($('#imb-auto').checked && $('#tab-imb').style.display!=='none'){loadImb();loadKeldi();}},60000);
 function urlRow(val){
   const div=document.createElement('div');div.className='urlrow';
   div.innerHTML=`<span class="dot"></span><input value="${esc(val)}" placeholder="https://..."><button class="btn" data-act="test">Tekshirish</button><button class="btn ghost" data-act="del">✕</button>`;
@@ -953,7 +1043,7 @@ $('#save').onclick=async()=>{
   await loadConfig();toast('Saqlandi ('+(r.forward_urls||[]).length+' ta manzil)');
 };
 function toast(m){const t=$('#toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2200);}
-loadImb();
+loadImb();loadKeldi();
 </script>
 </body>
 </html>'''
