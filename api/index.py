@@ -15,6 +15,7 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
 INGEST_TOKEN = os.environ.get("INGEST_TOKEN", "")
 IMB_BASE = os.environ.get("IMB_BASE", "https://imb.imbtruck.uz").rstrip("/")
+IMB_QWERTY_URL = os.environ.get("IMB_QWERTY_URL", "http://imb.imbtruck.uz/attendance/qwerty/")
 TASHKENT = timezone(timedelta(hours=5))
 
 REST = SUPABASE_URL + "/rest/v1"
@@ -340,14 +341,15 @@ def davomat(date: str = ""):
     people = {}
     for r in rows:
         code = (r.get("code") or "").strip()
-        if not code:
-            continue
-        t = r.get("scanned_at") or r.get("created_at") or ""
         m = re.search(r"tabel:\s*(\d+)", r.get("device") or "")
         tabel = m.group(1) if m else ""
-        p = people.get(code)
+        if not code and not tabel:
+            continue
+        key = ("t:" + tabel) if tabel else ("n:" + code.lower())
+        t = r.get("scanned_at") or r.get("created_at") or ""
+        p = people.get(key)
         if p is None:
-            people[code] = {"name": code, "tabel": tabel, "first": t, "last": t, "scans": 1}
+            people[key] = {"name": code, "tabel": tabel, "first": t, "last": t, "scans": 1}
         else:
             p["scans"] += 1
             if t and (not p["first"] or t < p["first"]):
@@ -356,6 +358,9 @@ def davomat(date: str = ""):
                 p["last"] = t
             if tabel and not p["tabel"]:
                 p["tabel"] = tabel
+            cur = p["name"] or ""
+            if code and any(c.isalpha() for c in code) and not any(c.isalpha() for c in cur):
+                p["name"] = code
     out = []
     for p in people.values():
         f = str(p["first"] or "")
@@ -364,6 +369,93 @@ def davomat(date: str = ""):
         out.append(p)
     out.sort(key=lambda x: x["first"] or "")
     return {"date": date, "count": len(out), "total_scans": len(rows), "data": out}
+
+
+def _extract_event(raw_text):
+    try:
+        q = parse_qs(raw_text)
+        if "event_log" in q:
+            return json.loads(q["event_log"][0])
+    except Exception:
+        pass
+    if "event_log" in raw_text:
+        j = raw_text.find("{", raw_text.find("event_log"))
+        if j != -1:
+            depth = 0
+            for k in range(j, len(raw_text)):
+                if raw_text[k] == "{":
+                    depth += 1
+                elif raw_text[k] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        try:
+                            return json.loads(raw_text[j:k + 1])
+                        except Exception:
+                            break
+    try:
+        return json.loads(raw_text)
+    except Exception:
+        return None
+
+
+def _relay_to_imb(raw_bytes, ct):
+    headers = {"Content-Type": ct} if ct else {}
+    last = ""
+    for _ in range(2):
+        try:
+            with httpx.Client(timeout=8) as c:
+                r = c.post(IMB_QWERTY_URL, content=raw_bytes, headers=headers)
+            return {"ok": r.status_code < 400, "status": r.status_code}
+        except httpx.HTTPError as exc:
+            last = str(exc)
+    return {"ok": False, "status": 0, "error": last}
+
+
+@app.post("/api/v1/attendance/qwerty/")
+@app.post("/api/v1/attendance/qwerty")
+async def device_qwerty(request: Request):
+    raw = await request.body()
+    ct = request.headers.get("content-type", "")
+    relay = _relay_to_imb(raw, ct)
+    txt = raw.decode("utf-8", "replace")
+    name = emp = ""
+    try:
+        ev = _extract_event(txt)
+        ace = (ev or {}).get("AccessControllerEvent") or {}
+        emp = str(ace.get("employeeNoString") or ace.get("employeeNo") or "").strip()
+        name = str(ace.get("name") or "").strip()
+        dt = str((ev or {}).get("dateTime") or "").strip()
+        st = str(ace.get("attendanceStatus") or "").strip()
+        dev_name = str(ace.get("deviceName") or "").strip()
+        if (name or emp) and _configured():
+            dev = (("tabel:" + emp) if emp else "") + ((" | " + dev_name) if dev_name else "")
+            row = {"code": (name or emp), "device": dev, "status": (st or "ok"),
+                   "source": "device", "scanned_at": _s(dt)}
+            try:
+                db_insert([row])
+            except httpx.HTTPError:
+                pass
+    except Exception:
+        pass
+    if _configured():
+        try:
+            log = db_get_setting("device_push_log", [])
+            if not isinstance(log, list):
+                log = []
+            log = (log + [{"t": datetime.now(timezone.utc).isoformat(), "ct": ct,
+                           "name": name, "emp": emp, "relay": relay, "raw": txt[:1500]}])[-40:]
+            db_set_setting("device_push_log", log)
+        except httpx.HTTPError:
+            pass
+    return JSONResponse({"success": True, "relay": relay}, status_code=200)
+
+
+@app.get("/api/v1/device/push-log")
+def device_push_log():
+    log = db_get_setting("device_push_log", []) if _configured() else []
+    if not isinstance(log, list):
+        log = []
+    return {"count": len(log), "items": log}
 
 
 @app.get("/api/v1/config")
