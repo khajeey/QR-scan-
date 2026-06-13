@@ -466,9 +466,14 @@ async def device_qwerty(request: Request, rest: str = ""):
     raw = await request.body()
     ct = request.headers.get("content-type", "")
     relay = _relay_device(raw, ct)
+    txt = raw.decode("utf-8", "replace")
     low = (rest or "").lower()
     direction = "in" if "in" in low else ("out" if "out" in low else None)
-    txt = raw.decode("utf-8", "replace")
+    if direction is None:
+        if "192.168.0.11" in txt:
+            direction = "in"
+        elif "192.168.0.19" in txt:
+            direction = "out"
     name = emp = ""
     saved = False
     try:
