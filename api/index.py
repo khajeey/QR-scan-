@@ -138,13 +138,15 @@ def _body_hikvision(scan):
     status = scan.get("status") or "received"
     attendance = status if status in ("checkIn", "checkOut") else "checkIn"
 
-    event = {"attendanceStatus": attendance}
+    device = str(scan.get("device") or "")
+    if device in ("", "imb"):
+        device = "Kirish" if attendance == "checkIn" else "Chiqish"
+
+    event = {"attendanceStatus": attendance, "deviceName": device}
     if code := str(scan.get("code") or ""):
         event["employeeNoString"] = code
     if name := str(scan.get("name") or ""):
         event["name"] = name
-    if device := str(scan.get("device") or ""):
-        event["deviceName"] = device
 
     body = {
         "AccessControllerEvent": event,
@@ -154,8 +156,8 @@ def _body_hikvision(scan):
         body["ipAddress"] = ip
     if mac := str(scan.get("mac_address") or ""):
         body["macAddress"] = mac
-    if source := str(scan.get("source") or scan.get("device") or ""):
-        body["deviceID"] = source
+    if dev_id := str(scan.get("device_id") or scan.get("source") or scan.get("device") or ""):
+        body["deviceID"] = dev_id
     return body
 
 
@@ -177,6 +179,9 @@ def _imb_event_to_scan(ev):
         "scanned_at": _to_local_iso(ev.get("t")),
         "source": "imb",
         "device": "imb",
+        "device_id": "255",
+        "ip_address": "192.168.0.19",
+        "mac_address": "e0:ca:3c:e4:55:27",
     }
 
 
