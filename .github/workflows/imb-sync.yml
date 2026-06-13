@@ -11,18 +11,19 @@ concurrency:
 
 permissions:
   contents: read
+  actions: write
 
 jobs:
   sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 22
+    timeout-minutes: 58
     steps:
-      - name: Ping IMB sync every ~55s (bridges GitHub cron gaps)
+      - name: Ping IMB sync every ~55s (long self-bridge over GitHub cron gaps)
         shell: bash
         env:
           SYNC_URL: https://qr-scan-hojiakbars-projects-13102ffd.vercel.app/api/v1/imb/sync?src=gha
           PERIOD: '55'
-          RUN_SECONDS: '1200'
+          RUN_SECONDS: '3300'
         run: |
           deadline=$(( $(date +%s) + RUN_SECONDS ))
           n=0
@@ -32,8 +33,16 @@ jobs:
             code=$(curl -s -m 90 -o /tmp/sync.json -w '%{http_code}' "$SYNC_URL" || echo "000")
             new=$(python3 -c "import json,sys;print(json.load(open('/tmp/sync.json')).get('new'))" 2>/dev/null || echo "?")
             echo "[$(date -u +%H:%M:%SZ)] #$n http=$code new=$new"
-            elapsed=$(( $(date +%s) - t0 ))
-            nap=$(( PERIOD - elapsed ))
+            nap=$(( PERIOD - ($(date +%s) - t0) ))
             if [ "$nap" -gt 0 ]; then sleep "$nap"; fi
           done
           echo "loop finished: $n calls over ~$RUN_SECONDS s"
+      - name: Chain next run (self-perpetuate even if the schedule never fires)
+        if: ${{ !cancelled() }}
+        run: |
+          curl -s -X POST \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/imb-sync.yml/dispatches" \
+            -d '{"ref":"main"}' \
+            -w "chain dispatch -> %{http_code}\n"
