@@ -1,0 +1,39 @@
+name: IMB Davomat Sync
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: imb-davomat-sync
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 22
+    steps:
+      - name: Ping IMB sync every ~55s (bridges GitHub cron gaps)
+        shell: bash
+        env:
+          SYNC_URL: https://qr-scan-hojiakbars-projects-13102ffd.vercel.app/api/v1/imb/sync?src=gha
+          PERIOD: '55'
+          RUN_SECONDS: '1200'
+        run: |
+          deadline=$(( $(date +%s) + RUN_SECONDS ))
+          n=0
+          while [ "$(date +%s)" -lt "$deadline" ]; do
+            n=$((n+1))
+            t0=$(date +%s)
+            code=$(curl -s -m 90 -o /tmp/sync.json -w '%{http_code}' "$SYNC_URL" || echo "000")
+            new=$(python3 -c "import json,sys;print(json.load(open('/tmp/sync.json')).get('new'))" 2>/dev/null || echo "?")
+            echo "[$(date -u +%H:%M:%SZ)] #$n http=$code new=$new"
+            elapsed=$(( $(date +%s) - t0 ))
+            nap=$(( PERIOD - elapsed ))
+            if [ "$nap" -gt 0 ]; then sleep "$nap"; fi
+          done
+          echo "loop finished: $n calls over ~$RUN_SECONDS s"
