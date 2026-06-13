@@ -23,7 +23,7 @@ jobs:
         env:
           SYNC_URL: https://qr-scan-hojiakbars-projects-13102ffd.vercel.app/api/v1/imb/sync?src=gha
           PERIOD: '55'
-          RUN_SECONDS: '3300'
+          RUN_SECONDS: '600'
         run: |
           deadline=$(( $(date +%s) + RUN_SECONDS ))
           n=0
