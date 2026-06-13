@@ -342,7 +342,7 @@ def davomat(date: str = ""):
     for r in rows:
         code = (r.get("code") or "").strip()
         m = re.search(r"tabel:\s*(\d+)", r.get("device") or "")
-        tabel = m.group(1) if m else ""
+        tabel = m.group(1) if m else (code if code.isdigit() else "")
         if not code and not tabel:
             continue
         key = ("t:" + tabel) if tabel else ("n:" + code.lower())
@@ -363,9 +363,13 @@ def davomat(date: str = ""):
                 p["name"] = code
     out = []
     for p in people.values():
-        f = str(p["first"] or "")
+        f, l = str(p["first"] or ""), str(p["last"] or "")
+        has_exit = bool(l) and l != f
         p["kelgan"] = f[11:16] if len(f) >= 16 else ""
         p["kelgan_full"] = f[:19].replace("T", " ")
+        p["ketgan"] = (l[11:16] if len(l) >= 16 else "") if has_exit else ""
+        p["ketgan_full"] = l[:19].replace("T", " ") if has_exit else ""
+        p["status"] = "chiqdi" if has_exit else "ichkarida"
         out.append(p)
     out.sort(key=lambda x: x["first"] or "")
     return {"date": date, "count": len(out), "total_scans": len(rows), "data": out}
@@ -891,9 +895,9 @@ INDEX_HTML = r'''<!DOCTYPE html>
         <div class="grow"></div>
         <button class="btn" id="keldi-csv">⬇ CSV</button>
       </div>
-      <p class="desc" style="color:var(--muted);font-size:13px;margin:0 0 12px">Tanlangan kunda kim ishga kelgani va birinchi marta o'tgan vaqti (face-id / barmoq izi). Manba — bulut (laptopsiz). Bir kishi bir kunda bir necha marta o'tsa, eng birinchi vaqti ko'rsatiladi.</p>
+      <p class="desc" style="color:var(--muted);font-size:13px;margin:0 0 12px">Tanlangan kunda kim ishga kelgani (eng birinchi skan) va ketgani (eng oxirgi skan). Manba — bulut (face-id / barmoq izi / QR). Bir kishi kun bo'yi bir necha marta o'tsa: eng birinchi = kelgan, eng oxirgi = ketgan. Faqat bir marta o'tgan bo'lsa hali ichkarida hisoblanadi.</p>
       <div class="tscroll"><table>
-        <thead><tr><th style="width:55px">#</th><th>Xodim</th><th style="width:110px">Tabel</th><th style="width:140px">Kelgan vaqt</th><th style="width:100px">Skanlar</th></tr></thead>
+        <thead><tr><th style="width:55px">#</th><th>Xodim</th><th style="width:90px">Tabel</th><th style="width:110px">Kelgan</th><th style="width:110px">Ketgan</th><th style="width:130px">Holat</th><th style="width:80px">Skanlar</th></tr></thead>
         <tbody id="keldi-rows"></tbody>
       </table></div>
       <div id="keldi-empty" class="empty" style="display:none">Bu kunda hali hech kim kelmadi (yoki ma'lumot yo'q).</div>
@@ -1070,16 +1074,18 @@ function renderKeldi(){
   const rows=keldiFilter();
   const tb=$('#keldi-rows');tb.innerHTML='';$('#keldi-empty').style.display=rows.length?'none':'';
   rows.forEach((r,i)=>{
+    const ket=r.ketgan?('<b>'+esc(r.ketgan)+'</b>'):'<span class="muted">—</span>';
+    const st=r.status==='chiqdi'?'<span class="pill ok">Chiqib ketgan</span>':'<span class="pill in">🟢 Ichkarida</span>';
     const tr=document.createElement('tr');
-    tr.innerHTML=`<td class="muted">${i+1}</td><td>${esc(r.name)}</td><td class="muted">${esc(r.tabel||'—')}</td><td><b>${esc(r.kelgan||'')}</b></td><td class="muted">${r.scans||1}</td>`;
+    tr.innerHTML=`<td class="muted">${i+1}</td><td>${esc(r.name)}</td><td class="muted">${esc(r.tabel||'—')}</td><td><b>${esc(r.kelgan||'')}</b></td><td>${ket}</td><td>${st}</td><td class="muted">${r.scans||1}</td>`;
     tb.appendChild(tr);
   });
 }
 $('#keldi-date').onchange=()=>loadKeldi();
 $('#keldi-csv').onclick=()=>{
   const rows=keldiFilter();
-  let out='﻿#,Xodim,Tabel,Kelgan vaqt,Skanlar\n';
-  rows.forEach((r,i)=>{out+=[i+1,'"'+String(r.name).replace(/"/g,'""')+'"',r.tabel||'',r.kelgan_full||r.kelgan||'',r.scans||1].join(',')+'\n';});
+  let out='﻿#,Xodim,Tabel,Kelgan,Ketgan,Holat,Skanlar\n';
+  rows.forEach((r,i)=>{out+=[i+1,'"'+String(r.name).replace(/"/g,'""')+'"',r.tabel||'',r.kelgan_full||r.kelgan||'',r.ketgan_full||r.ketgan||'',r.status||'',r.scans||1].join(',')+'\n';});
   const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([out],{type:'text/csv'}));a.download='davomat-'+keldiDate()+'.csv';a.click();
 };
 document.querySelectorAll('.subtab').forEach(b=>b.onclick=()=>{
