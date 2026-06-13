@@ -7,12 +7,9 @@ services:
     ports:
       - "8000:8000"
     environment:
-      # Majburiy — Supabase
       SUPABASE_URL: ${SUPABASE_URL}
       SUPABASE_SERVICE_KEY: ${SUPABASE_SERVICE_KEY}
-      # Ixtiyoriy — POST'larni himoyalash uchun maxfiy token
       INGEST_TOKEN: ${INGEST_TOKEN:-}
-      # Ixtiyoriy — IMB integratsiya manzillari
       IMB_BASE: ${IMB_BASE:-https://imb.imbtruck.uz}
       IMB_QWERTY_URL: ${IMB_QWERTY_URL:-http://imb.imbtruck.uz/attendance/qwerty/}
       PORT: "8000"
