@@ -531,7 +531,50 @@ def imb_state():
         events = []
     last_sync = db_get_setting("imb_last_sync", None) if _configured() else None
     last_forward = db_get_setting("imb_last_forward", None) if _configured() else None
-    return {"rows": rows, "events": events, "inside": sum(1 for r in rows if r["at_work"]), "last_sync": last_sync, "last_forward": last_forward}
+    device_events = db_get_setting("device_events", []) if _configured() else []
+    if not isinstance(device_events, list):
+        device_events = []
+    return {"rows": rows, "events": events, "inside": sum(1 for r in rows if r["at_work"]), "last_sync": last_sync, "last_forward": last_forward, "device_events": device_events[-3000:]}
+
+
+@app.post("/api/v1/imb/device")
+async def imb_device(request: Request):
+    if not _configured():
+        return _err(503, "server not configured")
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    items = payload if isinstance(payload, list) else (payload.get("events") if isinstance(payload, dict) else [])
+    if not isinstance(items, list):
+        items = []
+    existing = db_get_setting("device_events", [])
+    if not isinstance(existing, list):
+        existing = []
+    seen = set(str(e.get("serial")) for e in existing if isinstance(e, dict))
+    added = 0
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        serial = it.get("serial")
+        if serial is None or str(serial) in seen:
+            continue
+        existing.append({
+            "t": _s(it.get("t")),
+            "dir": "in" if it.get("dir") == "in" else "out",
+            "uid": _s(it.get("uid")),
+            "name": _s(it.get("name")),
+            "serial": serial,
+        })
+        seen.add(str(serial))
+        added += 1
+    if added:
+        existing = sorted(existing, key=lambda e: (e.get("t") or ""))[-8000:]
+        try:
+            db_set_setting("device_events", existing)
+        except httpx.HTTPError as exc:
+            return _err(502, "save failed: " + str(exc))
+    return {"added": added, "total": len(existing)}
 
 
 def _sink_add(request, raw_text):
@@ -788,6 +831,17 @@ function renderSync(ls){const se=$('#imb-sync');if(!se)return;if(!ls||!ls.t){se.
   if(age>180){se.textContent="⚠ Avto-yozuv to'xtagan ("+(age>=3600?Math.round(age/60)+'daq':age+'s')+" oldin)"+who;se.style.color='var(--err)';}
   else{se.textContent='· avto-yozuv: '+age+'s oldin'+who;se.style.color='var(--ok)';}
 }
+function cleanDeviceEvents(dev){
+  const asc=dev.slice().sort((a,b)=>String(a.t||'').localeCompare(String(b.t||'')));
+  const state={},names={},out=[];
+  asc.forEach(e=>{
+    const uid=e.uid; if(e.name)names[uid]=e.name;
+    if(state[uid]===e.dir)return;
+    state[uid]=e.dir;
+    out.push({t:e.t,name:names[uid]||e.name||('ID '+uid),type:e.dir==='in'?'in':'out',uid:uid});
+  });
+  return out.reverse();
+}
 async function loadImb(){
   if(imbBusy)return;imbBusy=true;
   if(!imbLastOk)setImbStatus('Yuklanmoqda...',false);
@@ -796,7 +850,8 @@ async function loadImb(){
     const rows=(d.rows||[]).map(r=>({name:r.name||('ID '+r.id),at_work:!!r.at_work,entry:r.entry_time||'',dur:r.duration||''}));
     rows.sort((a,b)=>(b.at_work-a.at_work)||String(b.entry||'').localeCompare(String(a.entry||'')));
     imbRows=rows;
-    imbEvents=(d.events||[]).slice().reverse();
+    const dev=d.device_events||[];
+    imbEvents = dev.length ? cleanDeviceEvents(dev) : (d.events||[]).slice().reverse();
     renderImbDav();renderImbEv();
     imbLastOk=Date.now();
     const insideN=(d.inside!=null)?d.inside:rows.filter(r=>r.at_work).length;
